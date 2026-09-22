@@ -15,6 +15,18 @@ from chollometro_alerts.product import extract_product
         ("6 botellas de 1L", (6, Decimal(1), Decimal(6))),
         ("Pack 12x330ml", (12, Decimal("0.330"), Decimal("3.960"))),
         ("24 latas de 33cl", (24, Decimal("0.33"), Decimal("7.92"))),
+        ("Pack de cerveza Mahou 6x330ml", (6, Decimal("0.33"), Decimal("1.98"))),
+        ("Pack Mahou 6 x 330 ml", (6, Decimal("0.33"), Decimal("1.98"))),
+        (
+            "24 latas Estrella Galicia de 33 cl",
+            (24, Decimal("0.33"), Decimal("7.92")),
+        ),
+        ("Pack 12 botellas cerveza 25cl", (12, Decimal("0.25"), Decimal("3.00"))),
+        (
+            "6 bricks de leche Pascual de 1L",
+            (6, Decimal(1), Decimal(6)),
+        ),
+        ("Leche entera 1 litro", (1, Decimal(1), Decimal(1))),
     ],
 )
 def test_product_volume_variants(text, expected):
@@ -50,3 +62,10 @@ def test_high_confidence_volume_does_not_call_llm():
         raise AssertionError("LLM must not be called")
 
     assert extract_product("Pack 12x330ml", fail).total_volume_l == Decimal("3.960")
+
+
+def test_ambiguous_product_without_volume_does_not_invent_values():
+    result = extract_product("Cerveza artesanal sin formato indicado")
+    assert result.units is None
+    assert result.unit_volume_l is None
+    assert result.total_volume_l is None

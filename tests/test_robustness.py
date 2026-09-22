@@ -217,6 +217,57 @@ def test_interest_rules():
     assert apply_rule(deal, InterestRule("milk")).accepted
 
 
+@pytest.mark.parametrize(
+    ("price_per_liter", "accepted"),
+    [
+        (Decimal("0.79"), True),
+        (Decimal("0.799"), True),
+        (Decimal("0.80"), False),
+        (Decimal("0.81"), False),
+        (None, False),
+    ],
+)
+def test_milk_price_per_liter_is_exclusive(price_per_liter, accepted):
+    from chollometro_alerts.filters import apply_rule
+
+    deal = Deal(
+        "milk-price",
+        "Puleva leche",
+        "https://x",
+        Decimal("1.00"),
+        "Amazon",
+        100,
+        "milk",
+        None,
+        total_volume_l=Decimal(1),
+        price_per_liter=price_per_liter,
+    )
+    rule = InterestRule("milk", max_price_per_liter=Decimal("0.80"))
+    assert apply_rule(deal, rule).accepted is accepted
+
+
+def test_milk_price_per_liter_is_configurable(monkeypatch):
+    from chollometro_alerts.config import load_rules
+    from chollometro_alerts.filters import apply_rule
+
+    deal = Deal(
+        "milk-config",
+        "Puleva leche",
+        "https://x",
+        Decimal("1.00"),
+        "Amazon",
+        100,
+        "milk",
+        None,
+        total_volume_l=Decimal(1),
+        price_per_liter=Decimal("0.78"),
+    )
+    monkeypatch.setenv("MILK_MAX_PRICE_PER_LITER", "0.75")
+    assert not apply_rule(deal, load_rules()["milk"]).accepted
+    monkeypatch.setenv("MILK_MAX_PRICE_PER_LITER", "0.80")
+    assert apply_rule(deal, load_rules()["milk"]).accepted
+
+
 def test_error_alert_cooldown_and_recovery(tmp_path):
     class ErrorNotifier:
         def __init__(self):

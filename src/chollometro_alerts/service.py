@@ -1,12 +1,13 @@
 import logging
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
 
 from .config import InterestRule
 from .filters import InterestEngine
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
-from .product import ProductExtraction, extract_product
+from .product import ProductExtraction, extract_product, normalize_product_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ class AlertService:
             self.last_summary.already_known += int(known)
             cached = self.repository.get_extraction(deal.deal_id)
             if cached is not None:
-                extraction = ProductExtraction.model_validate(cached)
+                extraction = normalize_product_extraction(
+                    ProductExtraction.model_validate(cached)
+                )
                 self.extraction_cache_hits += 1
                 self.last_summary.llm_cache_hits += 1
             else:
@@ -130,6 +133,21 @@ class AlertService:
             self.repository.upsert(deal)
             self.repository.mark_notified(deal.deal_id)
         return len(deals)
+
+    def run_active_rules(self, pages=1):
+        """Scan only enabled persisted rules; comparisons remain deterministic."""
+        total = 0
+        for row in self.repository.list_alert_rules(enabled_only=True):
+            _, query, product_type, _brand, max_price, price_unit, _ = row
+            rule = InterestRule(
+                category="milk" if product_type == "leche" else "beer",
+                max_price=Decimal(max_price) if price_unit == "unit" else None,
+                max_price_per_liter=Decimal(max_price)
+                if price_unit == "liter"
+                else None,
+            )
+            total += self.run([query], pages, {rule.category: rule})
+        return total
 
     def notify_error(
         self, error_type, component, message, cooldown_minutes=60, run_id=None

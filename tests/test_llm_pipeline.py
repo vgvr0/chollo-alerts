@@ -7,7 +7,9 @@ from test_deepseek import Response, Session, payload
 from chollometro_alerts.config import ConfigurationError, InterestRule
 from chollometro_alerts.llm import create_extractor
 from chollometro_alerts.llm.deepseek import DeepSeekProductExtractor
+from chollometro_alerts.models import Deal
 from chollometro_alerts.parser import parse_search
+from chollometro_alerts.pricing import PricingEngine
 from chollometro_alerts.product import extract_product
 from chollometro_alerts.repository import DealRepository
 from chollometro_alerts.service import AlertService
@@ -61,6 +63,23 @@ def test_complete_deterministic_extraction_never_calls_deepseek(tmp_path):
     assert (
         service.repository.get_extraction("123")["extraction_source"] == "deterministic"
     )
+
+
+def test_internal_pipeline_normalizes_before_pricing():
+    extraction = extract_product("Pack Mahou 6 x 330 ml")
+    deal = Deal(
+        "pipeline",
+        "Pack Mahou 6 x 330 ml",
+        "https://x",
+        Decimal("9.90"),
+        None,
+        1,
+        "beer",
+        None,
+    )
+    priced = PricingEngine().evaluate(deal, extraction)
+    assert extraction.total_volume_l == Decimal("1.98")
+    assert priced.price_per_liter == Decimal("9.90") / Decimal("1.98")
 
 
 def test_new_ambiguous_deal_calls_once_and_checks_identity_first(tmp_path):

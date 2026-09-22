@@ -61,7 +61,7 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
         and rule.max_price_per_liter is not None
         and (
             deal.price_per_liter is None
-            or deal.price_per_liter > rule.max_price_per_liter
+            or deal.price_per_liter >= rule.max_price_per_liter
         )
     ):
         return FilterResult(False, "REJECTED_PRICE_PER_LITER")

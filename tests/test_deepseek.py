@@ -65,6 +65,11 @@ def test_deepseek_json_is_validated_and_tokens_counted():
         "LLM_CALLS": 1,
         "LLM_FAILURES": 0,
         "LLM_TOKENS": 17,
+        "LLM_INPUT_TOKENS": 0,
+        "LLM_CACHED_TOKENS": 0,
+        "LLM_OUTPUT_TOKENS": 0,
+        "LLM_REASONING_TOKENS": 0,
+        "LLM_TOTAL_TOKENS": 17,
     }
 
 
@@ -89,11 +94,34 @@ def test_structured_schema_and_timeout():
     assert args == ("https://api.deepseek.com/responses",)
     assert kwargs["timeout"] == 7
     assert kwargs["json"]["model"] == "custom"
+    assert kwargs["json"]["reasoning"] == {"effort": "none"}
     fmt = kwargs["json"]["text"]["format"]
     assert fmt["type"] == "json_schema"
     assert fmt["schema"]["additionalProperties"] is False
     assert set(fmt["schema"]["required"]) == set(payload())
     assert "price" not in fmt["schema"]["properties"]
+
+
+def test_usage_details_are_optional_and_accumulated():
+    session = Session(
+        [
+            Response(
+                payload(),
+                usage={
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                },
+            )
+        ]
+    )
+    extractor = DeepSeekProductExtractor(api_key="test", session=session)
+    extractor("Pack Mahou")
+    assert extractor.metrics["LLM_INPUT_TOKENS"] == 12
+    assert extractor.metrics["LLM_CACHED_TOKENS"] == 0
+    assert extractor.metrics["LLM_OUTPUT_TOKENS"] == 8
+    assert extractor.metrics["LLM_REASONING_TOKENS"] == 0
+    assert extractor.metrics["LLM_TOTAL_TOKENS"] == 20
 
 
 def test_timeout_then_success():

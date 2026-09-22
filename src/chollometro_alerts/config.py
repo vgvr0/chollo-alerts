@@ -20,6 +20,27 @@ class ConfigurationError(ValueError):
 
 
 @dataclass(frozen=True)
+class TelegramSettings:
+    bot_token: str
+    authorized_chat_id: str
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        missing = [
+            name
+            for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+            if not os.getenv(name, "").strip()
+        ]
+        if missing:
+            raise ConfigurationError("faltan " + ", ".join(missing))
+        return cls(
+            bot_token=os.environ["TELEGRAM_BOT_TOKEN"].strip(),
+            authorized_chat_id=os.environ["TELEGRAM_CHAT_ID"].strip(),
+        )
+
+
+@dataclass(frozen=True)
 class LLMSettings:
     enabled: bool = False
     provider: str = "deepseek"
@@ -81,7 +102,15 @@ class InterestRule:
 
 def _decimal(name):
     value = os.getenv(name)
-    return Decimal(value) if value else None
+    if not value:
+        return None
+    try:
+        parsed = Decimal(value)
+    except ArithmeticError as exc:
+        raise ConfigurationError(f"{name} debe ser un número decimal válido") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ConfigurationError(f"{name} debe ser un decimal finito no negativo")
+    return parsed
 
 
 def load_rules():
@@ -90,7 +119,7 @@ def load_rules():
         "milk": InterestRule(
             category="milk",
             max_price=_decimal("MILK_MAX_PRICE"),
-            max_price_per_liter=_decimal("MILK_MAX_PRICE_PER_LITER") or Decimal("0.75"),
+            max_price_per_liter=_decimal("MILK_MAX_PRICE_PER_LITER") or Decimal("0.80"),
             include_keywords=_list("MILK_INCLUDE_KEYWORDS"),
             exclude_keywords=_list("MILK_EXCLUDE_KEYWORDS"),
             include_merchants=_list("MILK_INCLUDE_MERCHANTS"),

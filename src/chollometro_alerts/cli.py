@@ -6,11 +6,12 @@ from time import perf_counter
 from dotenv import load_dotenv
 
 from .client import ChollometroClient
-from .config import PROJECT_ROOT, ConfigurationError, load_rules
+from .config import PROJECT_ROOT, ConfigurationError, TelegramSettings, load_rules
 from .llm.deepseek import DeepSeekProductExtractor
 from .repository import DealRepository
 from .service import AlertService
 from .telegram import DryRunNotifier, TelegramNotifier
+from .telegram_rules import TelegramRuleController
 
 
 def test_llm(text, parser):
@@ -47,9 +48,24 @@ def main():
     check.add_argument("--dry-run", action="store_true")
     probe = sub.add_parser("test-llm", help="Probar DeepSeek con una sola petición")
     probe.add_argument("text", help="Texto del producto que se extraerá")
+    sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
     a = p.parse_args()
     if a.command == "test-llm":
         test_llm(a.text, p)
+        return
+    if a.command == "telegram-poll":
+        extractor = DeepSeekProductExtractor()
+        try:
+            telegram = TelegramSettings.from_env()
+        except ConfigurationError as exc:
+            p.error(f"Error de configuración: {exc}")
+        controller = TelegramRuleController(
+            bot_token=telegram.bot_token,
+            authorized_chat_id=telegram.authorized_chat_id,
+            repository=DealRepository(a.db),
+            translator=extractor,
+        )
+        controller.poll_once()
         return
     if a.command != "baseline" and not getattr(a, "dry_run", False):
         missing = [
