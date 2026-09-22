@@ -17,6 +17,8 @@ venv/
 
 # Local database
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # IDE / OS
 .vscode/

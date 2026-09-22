@@ -9,6 +9,8 @@ from .alert_rule import AlertConstraints, AlertRule
 from .intent import AlertIntent
 from .models import Deal
 
+DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
+
 
 class DealRepository:
     def __init__(self, path="deals.sqlite3"):
@@ -229,6 +231,77 @@ class DealRepository:
         ).fetchone()
         return self.rule_from_row(
             (*row, structured[0] if structured is not None else None)
+        )
+
+    def rule_by_id(self, rule_id):
+        """Load any persisted rule (structured or legacy) through `rule_from_row`."""
+        row = self.db.execute(
+            "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules WHERE id=?",
+            (rule_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        structured = self.db.execute(
+            "SELECT structured_rule FROM alert_rules WHERE id=?", (rule_id,)
+        ).fetchone()
+        return self.rule_from_row(
+            (*row, structured[0] if structured is not None else None)
+        )
+
+    def _related_deal_rows(self, terms):
+        if not terms:
+            return []
+        where = " AND ".join("lower(title) LIKE ?" for _ in terms)
+        params = [f"%{term}%" for term in terms]
+        return self.db.execute(
+            f"SELECT {DEAL_COLUMNS} FROM deals WHERE {where} "
+            "ORDER BY first_seen_at DESC, deal_id DESC",
+            params,
+        ).fetchall()
+
+    def historical_deals(self, terms=(), category=None):
+        """Read-only lookup of stored deals reasonably related to an alert query.
+
+        Only already persisted rows are returned: the replay never scrapes and
+        never stores anything. `terms` are matched (case-insensitively) against
+        the stored title, which is the local text available for old deals.
+        """
+        rows = list(self._related_deal_rows([t.casefold() for t in terms if t]))
+        seen = {row[0] for row in rows}
+        if category:
+            for row in self.db.execute(
+                f"SELECT {DEAL_COLUMNS} FROM deals WHERE lower(category)=? "
+                "ORDER BY first_seen_at DESC, deal_id DESC",
+                (category.casefold(),),
+            ):
+                if row[0] not in seen:
+                    seen.add(row[0])
+                    rows.append(row)
+        return [self.deal_from_row(row) for row in rows]
+
+    @staticmethod
+    def deal_from_row(row):
+        """Rebuild a `Deal` from the persisted columns (no scraping involved)."""
+        (
+            deal_id,
+            title,
+            url,
+            price,
+            merchant,
+            temperature,
+            category,
+            published_at,
+        ) = row
+        return Deal(
+            deal_id,
+            title,
+            url,
+            Decimal(price) if price not in (None, "") else None,
+            merchant,
+            temperature,
+            category,
+            datetime.fromisoformat(published_at) if published_at else None,
+            product_text=title,
         )
 
     def attach_alert_rule(self, rule_id, rule, original_text=None):

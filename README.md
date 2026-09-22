@@ -37,6 +37,62 @@ debe ser estrictamente menor.
 ni escribe observaciones, baseline, extracciones o `notified_at`. Cada línea del
 informe incluye `price_unit` y `price_per_unit`.
 
+## Testing an alert against historical deals
+
+Para validar una regla antes de confiar en ella, `alert test` la reproduce contra
+los deals que ya están guardados en la base de datos local:
+
+```powershell
+chollometro-alerts alert test 12
+chollometro-alerts alert test 12 --limit 100
+```
+
+Ejemplo de salida:
+
+```text
+RULE #12
+
+Query: zapatillas
+Product: zapatillas
+Brand: ASICS
+max_price: 80
+
+Historical deals available: 87
+Deals evaluated: 53
+
+MATCH:        6
+REJECT:       43
+NOT_EVALUABLE: 4
+```
+
+`alert test` es un simulador de solo lectura:
+
+* usa deals locales ya conocidos (`--limit` acota cuántos se evalúan, por defecto
+  200; `--limit 0` los evalúa todos);
+* no hace scraping: no pide ofertas nuevas a Chollometro;
+* no llama al LLM: reutiliza la `ProductExtraction` cacheada y, si no existe,
+  solo la extracción determinista del texto guardado;
+* no envía Telegram;
+* no modifica estado: no crea ni toca deals, extracciones, observaciones,
+  baseline, `notified_at`, matches ni `scan_runs`.
+
+Sirve para diagnosticar por qué una regla funciona o no, porque cada deal se
+evalúa con el mismo motor determinista que producción y dry-run
+(`repository.rule_from_row()` → `AlertRule` → `DealEvaluator` →
+`PricingEngine` → `InterestEngine`). El informe distingue:
+
+* `MATCH`: la regla habría avisado de ese deal;
+* `REJECT`: el deal se rechaza con el motivo existente (`REJECTED_PRICE`,
+  `REJECTED_PRICE_PER_UNIT`, `REJECTED_BRAND`, `REJECTED_QUANTITY`, ...);
+* `NOT_EVALUABLE`: falta información local para comprobar la regla (por ejemplo
+  cantidad o volumen desconocidos, `REJECTED_UNKNOWN_QUANTITY`). En producción
+  la semántica no cambia; solo el informe de replay lo etiqueta así.
+
+Si `Historical deals available` es 0, el replay no dice nada sobre la regla: no
+hay datos locales para evaluarla y no hay que interpretarlo como que la alerta
+está mal. La `query` de la regla es la que selecciona los deals relacionados por
+título.
+
 ## Fuente investigada
 
 La navegación con Chrome DevTools/CDP mostró que la ruta pública del frontend es `GET https://www.chollometro.com/search?q=<término>&page=<n>`. La respuesta contiene HTML server-side: cada oferta es `article#thread_<id>` con `data-t-d={"id":...}`. El HTML incluye título (`a.thread-title`), URL, precio (`.thread-price`), tienda (`[data-t="merchantLink"]`), temperatura (botón con `...°`) y antigüedad (`Publicado hace ...`). No se necesitó cookie ni sesión para esta ruta. No se encontró una API JSON pública necesaria para la extracción; por estabilidad y simplicidad se usa este HTML server-side.
