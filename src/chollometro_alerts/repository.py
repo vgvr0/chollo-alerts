@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import UTC, datetime
 
@@ -12,6 +13,9 @@ class DealRepository:
         )
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS error_alerts (fingerprint TEXT PRIMARY KEY, error_type TEXT NOT NULL, component TEXT NOT NULL, message TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_notified_at TEXT, occurrence_count INTEGER NOT NULL)"
+        )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
         )
         self.db.commit()
 
@@ -94,3 +98,27 @@ class DealRepository:
 
     def deal_count(self):
         return self.db.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+
+    def exists(self, deal_id: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM deals WHERE deal_id=?", (deal_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def known_deal_ids(self):
+        return {r[0] for r in self.db.execute("SELECT deal_id FROM deals")}
+
+    def get_extraction(self, deal_id):
+        row = self.db.execute(
+            "SELECT payload FROM product_extractions WHERE deal_id=?", (deal_id,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_extraction(self, deal_id, payload):
+        self.db.execute(
+            "INSERT OR REPLACE INTO product_extractions VALUES (?,?)",
+            (deal_id, json.dumps(payload, default=str)),
+        )
+        self.db.commit()

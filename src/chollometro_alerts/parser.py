@@ -7,8 +7,6 @@ from bs4 import BeautifulSoup
 
 from .filters import category_for
 from .models import Deal
-from .volume import extract_volume
-from .product import extract_product
 
 
 def _price(text):
@@ -48,7 +46,7 @@ def _published(text):
     return datetime.now(UTC) - timedelta(seconds=seconds)
 
 
-def parse_search(html: str, query: str, llm=None) -> list[Deal]:
+def parse_search(html: str, query: str) -> list[Deal]:
     soup = BeautifulSoup(html, "html.parser")
     deals = []
     for article in soup.select('article[id^="thread_"]'):
@@ -97,16 +95,12 @@ def parse_search(html: str, query: str, llm=None) -> list[Deal]:
         if published is None and data.get("publishedAt"):
             published = datetime.fromtimestamp(data["publishedAt"], UTC)
         metadata = " ".join(
-            str(value) for key, value in data.items()
-            if isinstance(value, (str, int, float)) and key.casefold() not in {"title", "price"}
+            str(value)
+            for key, value in data.items()
+            if isinstance(value, (str, int, float))
+            and key.casefold() not in {"title", "price"}
         )
         product_text = " ".join(filter(None, (title, description, merchant, metadata)))
-        extraction = extract_product(product_text, llm=llm)
-        units = unit_volume_l = total_volume_l = price_per_liter = None
-        if extraction.total_volume_l is not None:
-            units, unit_volume_l, total_volume_l = extraction.units, extraction.unit_volume_l, extraction.total_volume_l
-            if price is not None and total_volume_l:
-                price_per_liter = price / total_volume_l
         deals.append(
             Deal(
                 aid,
@@ -117,11 +111,7 @@ def parse_search(html: str, query: str, llm=None) -> list[Deal]:
                 temp,
                 category,
                 published,
-                units,
-                unit_volume_l,
-                total_volume_l,
-                price_per_liter,
-                extraction,
+                product_text=product_text,
             )
         )
     return deals

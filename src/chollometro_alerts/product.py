@@ -1,10 +1,6 @@
-"""Two-stage product extraction.
+"""Deterministic product facts and validated provider enrichment."""
 
-The LLM boundary is deliberately a callable: the application can provide its
-own provider without making parsing depend on a particular SDK.
-"""
 import json
-import re
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 
@@ -22,7 +18,7 @@ class ProductExtraction(BaseModel):
     units: int | None = Field(default=None, ge=1)
     unit_volume_l: Decimal | None = Field(default=None, ge=0)
     total_volume_l: Decimal | None = Field(default=None, ge=0)
-    confidence: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    confidence: Decimal = Field(default=Decimal(0), ge=0, le=1)
     extraction_source: str = "deterministic"
 
     @field_validator("extraction_source")
@@ -38,9 +34,13 @@ def _deterministic(text: str) -> ProductExtraction:
     # These are intentionally conservative. A wrong brand/type is worse than null.
     words = text.strip().split()
     product_type = next(
-        (w.casefold() for w in words if w.casefold() in {
-            "leche", "cerveza", "agua", "refresco", "zumo", "vino", "detergente"
-        }), None
+        (
+            w.casefold()
+            for w in words
+            if w.casefold()
+            in {"leche", "cerveza", "agua", "refresco", "zumo", "vino", "detergente"}
+        ),
+        None,
     )
     return ProductExtraction(
         product_type=product_type,
@@ -54,7 +54,8 @@ def _deterministic(text: str) -> ProductExtraction:
 
 def extract_product(
     product_text: str,
-    llm: Callable[[str], Mapping | str] | None = None,
+    llm: Callable[[str], ProductExtraction | Mapping | str] | None = None,
+    deal_id: str | None = None,
 ) -> ProductExtraction:
     """Extract product facts deterministically, completing missing facts via LLM.
 
@@ -64,19 +65,46 @@ def extract_product(
     """
     deterministic = _deterministic(product_text)
     if llm is None or (
-        deterministic.total_volume_l is not None and deterministic.confidence >= Decimal("0.95")
+        deterministic.total_volume_l is not None
+        and deterministic.confidence >= Decimal("0.95")
     ):
         return deterministic
-    raw = llm(product_text)
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    llm_result = ProductExtraction.model_validate({**raw, "extraction_source": "llm"})
+    try:
+        raw = (
+            llm(product_text, deal_id=deal_id)
+            if deal_id is not None
+            else llm(product_text)
+        )
+        if isinstance(raw, ProductExtraction):
+            llm_result = raw
+        else:
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            llm_result = ProductExtraction.model_validate(
+                {**raw, "extraction_source": "llm"}
+            )
+        if llm_result.extraction_source == "deterministic":
+            return deterministic
+    except Exception:  # noqa: BLE001 - invalid providers use deterministic fallback
+        return deterministic
     merged = deterministic.model_dump()
-    for field in ("product_type", "brand", "variant", "units", "unit_volume_l", "total_volume_l"):
+    for field in (
+        "product_type",
+        "brand",
+        "variant",
+        "units",
+        "unit_volume_l",
+        "total_volume_l",
+    ):
         if merged[field] is None and getattr(llm_result, field) is not None:
             merged[field] = getattr(llm_result, field)
     merged["confidence"] = min(deterministic.confidence, llm_result.confidence)
-    merged["extraction_source"] = "hybrid" if any(
-        getattr(deterministic, f) is not None for f in ("units", "unit_volume_l", "total_volume_l")
-    ) else "llm"
+    merged["extraction_source"] = (
+        "hybrid"
+        if any(
+            getattr(deterministic, f) is not None
+            for f in ("units", "unit_volume_l", "total_volume_l")
+        )
+        else "llm"
+    )
     return ProductExtraction.model_validate(merged)

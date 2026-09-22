@@ -40,3 +40,12 @@ class DryRunNotifier:
 
     def send(self, deal: Deal):
         print(format_message(deal))
+        extraction = deal.product_extraction
+        values = {
+            "EXTRACTION_SOURCE": getattr(extraction, "extraction_source", None),
+            "CONFIDENCE": getattr(extraction, "confidence", None),
+            "TOTAL_VOLUME_L": deal.total_volume_l,
+            "PRICE_PER_LITER": deal.price_per_liter,
+        }
+        for name, value in values.items():
+            print(f"{name}={value if value is not None else 'N/D'}")

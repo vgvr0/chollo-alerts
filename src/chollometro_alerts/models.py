@@ -18,3 +18,4 @@ class Deal:
     total_volume_l: Decimal | None = None
     price_per_liter: Decimal | None = None
     product_extraction: object | None = None
+    product_text: str = ""
