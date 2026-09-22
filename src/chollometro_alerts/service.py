@@ -4,10 +4,10 @@ from dataclasses import dataclass
 
 from .alert_rule import AlertRule
 from .config import InterestRule
+from .evaluation import DealEvaluator, interest_rule_from_alert
 from .filters import InterestEngine
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
-from .product import ProductExtraction, extract_product, normalize_product_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class AlertService:
         self.extractor = extractor
         self.pricing = PricingEngine()
         self.interest = InterestEngine()
+        self.evaluator = DealEvaluator(self.repository, self.pricing, self.interest)
         self.extraction_cache_hits = 0
 
     def run(self, queries, pages=1, rules=None):
@@ -120,26 +121,19 @@ class AlertService:
                         )
                         self.last_summary.telegram_sent += 1
                 continue
-            # Check identity before any possible provider call, including legacy deals.
-            known = self.repository.exists(deal.deal_id)
-            self.last_summary.already_known += int(known)
-            cached = self.repository.get_extraction(deal.deal_id)
-            if cached is not None:
-                extraction = normalize_product_extraction(
-                    ProductExtraction.model_validate(cached)
-                )
+            # Canonical evaluation: identity, facts, pricing and interest rule.
+            evaluation = self.evaluator.evaluate(
+                deal, rule, extractor=extractor, persist_extraction=not dry_run
+            )
+            deal, extraction, result = (
+                evaluation.deal,
+                evaluation.extraction,
+                evaluation.result,
+            )
+            self.last_summary.already_known += int(evaluation.known)
+            if evaluation.from_cache:
                 self.extraction_cache_hits += 1
                 self.last_summary.llm_cache_hits += 1
-            else:
-                extraction = extract_product(
-                    deal.product_text or deal.title,
-                    llm=None if known else extractor,
-                    deal_id=deal.deal_id,
-                )
-                if not dry_run:
-                    self.repository.save_extraction(
-                        deal.deal_id, extraction.model_dump(mode="json")
-                    )
             for field in ("llm_calls", "llm_failures", "llm_tokens"):
                 key = field.upper()
                 value = getattr(extractor, "metrics", {}).get(key, 0)
@@ -150,9 +144,7 @@ class AlertService:
                 source_count,
                 getattr(self.last_summary, source_count) + 1,
             )
-            deal = self.pricing.evaluate(deal, extraction)
             self.last_summary.classified += 1
-            result = self.interest.evaluate(deal, rule)
             results.append((rule_id, query, deal, rule, result))
             if not result.accepted:
                 logger.info(
@@ -237,18 +229,7 @@ class AlertService:
 
     @staticmethod
     def _interest_rule(alert_rule: AlertRule):
-        c = alert_rule.constraints
-        return InterestRule(
-            category=alert_rule.category or "generic",
-            product_type=alert_rule.product,
-            brand=alert_rule.brand,
-            max_price=c.max_price,
-            max_price_per_liter=c.max_price_per_liter,
-            max_price_per_unit=c.max_price_per_unit,
-            min_quantity=c.min_quantity,
-            min_volume_l=c.min_volume_l,
-            min_temperature=c.min_temperature,
-        )
+        return interest_rule_from_alert(alert_rule)
 
     def _active_alert_rules(self):
         """Yield (rule_id, AlertRule) for every enabled persisted rule."""

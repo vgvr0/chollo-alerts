@@ -11,6 +11,13 @@ from .client import ChollometroClient
 from .config import PROJECT_ROOT, ConfigurationError, TelegramSettings, load_rules
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
+from .replay import (
+    DEFAULT_REPLAY_LIMIT,
+    ReplayDecision,
+    ReplayEngine,
+    ReplayResult,
+    RuleNotFoundError,
+)
 from .repository import DealRepository
 from .runtime import positive_interval, run_daemon
 from .service import AlertService
@@ -23,6 +30,8 @@ PRICE_REJECTIONS = {
     "REJECTED_PRICE_PER_KILOGRAM",
     "REJECTED_PRICE_PER_UNIT",
 }
+
+REPLAY_SAMPLE_SIZE = 10
 
 
 def _price_unit_label(rule):
@@ -57,6 +66,76 @@ def test_llm(text, parser):
         raise SystemExit(1)
 
 
+def _price_label(price):
+    return f"{price:.2f} €" if price is not None else "N/D"
+
+
+def _result_label(entry):
+    if entry.decision is ReplayDecision.MATCH:
+        return "MATCH"
+    if entry.decision is ReplayDecision.NOT_EVALUABLE:
+        return f"NOT_EVALUABLE ({entry.reason})"
+    return entry.reason or "REJECT"
+
+
+def _format_sample(entries, header, sample_size):
+    lines = ["", header, ""]
+    if not entries:
+        lines.append("(none)")
+        return lines
+    for index, entry in enumerate(entries[:sample_size], start=1):
+        lines.append(f"[{index}] #{entry.deal_id} {entry.title}")
+        lines.append(f"    Price: {_price_label(entry.price)}")
+        lines.append(f"    Result: {_result_label(entry)}")
+    if len(entries) > sample_size:
+        lines.append(f"    (showing {sample_size} of {len(entries)})")
+    return lines
+
+
+def format_replay(result: ReplayResult, sample_size=REPLAY_SAMPLE_SIZE) -> str:
+    """Readable report of a replay run: no Telegram, no state, just evidence."""
+    lines = [f"RULE #{result.rule_id}", "", f"Query: {result.query}"]
+    if result.product:
+        lines.append(f"Product: {result.product}")
+    if result.brand:
+        lines.append(f"Brand: {result.brand}")
+    for name, value in result.constraints.model_dump().items():
+        if value is not None:
+            lines.append(f"{name}: {value}")
+    lines += [
+        "",
+        f"Historical deals available: {result.deals_available}",
+        f"Deals evaluated: {result.deals_evaluated}",
+        "",
+        f"{'MATCH:':<14}{result.matched}",
+        f"{'REJECT:':<14}{result.rejected}",
+        f"{'NOT_EVALUABLE:':<14}{result.not_evaluable}",
+    ]
+    if result.deals_available > result.deals_evaluated:
+        pending = result.deals_available - result.deals_evaluated
+        lines.append(f"(limit applied: {pending} related deals were not evaluated)")
+    if not result.has_historical_deals:
+        lines += [
+            "",
+            f"No historical deals stored for query '{result.query}'.",
+            "There is no local data to evaluate, so this replay says nothing about",
+            "the rule: 0 matches does NOT mean the alert is wrong.",
+            "Re-run it once deals for this query are stored locally.",
+        ]
+        return "\n".join(lines)
+    lines += _format_sample(result.matches(), "MATCHES", sample_size)
+    lines += _format_sample(result.rejections(), "SAMPLE REJECTIONS", sample_size)
+    if result.not_evaluable:
+        lines += _format_sample(
+            result.not_evaluable_results(), "SAMPLE NOT_EVALUABLE", sample_size
+        )
+    lines += [
+        "",
+        "Offline replay of local deals: no scraping, no LLM, no Telegram, no writes.",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     load_dotenv(PROJECT_ROOT / ".env")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -82,6 +161,16 @@ def main():
         command = alert_sub.add_parser(name)
         command.add_argument("text")
     alert_sub.add_parser("list")
+    replay_parser = alert_sub.add_parser(
+        "test", help="Replay una regla contra los deals históricos ya guardados"
+    )
+    replay_parser.add_argument("rule_id", type=int, help="Id de la AlertRule")
+    replay_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_REPLAY_LIMIT,
+        help="Máximo de deals históricos a evaluar (0 = sin límite)",
+    )
     a = p.parse_args()
     if a.command == "alert":
         repository = DealRepository(a.db)
@@ -90,6 +179,14 @@ def main():
                 print(
                     f"#{row[0]} — {row[1]} — {row[2] or 'N/D'} — {row[3] or 'N/D'} — {'activa' if row[5] else 'inactiva'}"
                 )
+            return
+        if a.alert_command == "test":
+            # Read-only simulator: no scraper, no LLM, no Telegram, no writes.
+            try:
+                report = ReplayEngine(repository).replay(a.rule_id, limit=a.limit)
+            except RuleNotFoundError as exc:
+                p.error(str(exc))
+            print(format_replay(report))
             return
         parser = DeepSeekAlertRuleParser(DeepSeekProductExtractor())
         try:
