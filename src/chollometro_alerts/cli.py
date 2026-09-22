@@ -11,6 +11,7 @@ from .client import ChollometroClient
 from .config import PROJECT_ROOT, ConfigurationError, TelegramSettings, load_rules
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
+from .product import product_type_matches
 from .replay import (
     DEFAULT_REPLAY_LIMIT,
     ReplayDecision,
@@ -32,6 +33,14 @@ PRICE_REJECTIONS = {
 }
 
 REPLAY_SAMPLE_SIZE = 10
+
+
+def format_alert_listing(rule_id, rule, enabled):
+    """Render one stored alert for `alert list`, from the canonical rule."""
+    return (
+        f"#{rule_id} — {rule.query} — {rule.product or 'N/D'} — "
+        f"{rule.brand or 'N/D'} — {'activa' if enabled else 'inactiva'}"
+    )
 
 
 def _price_unit_label(rule):
@@ -175,10 +184,13 @@ def main():
     if a.command == "alert":
         repository = DealRepository(a.db)
         if a.alert_command == "list":
-            for row in repository.structured_alert_rules():
-                print(
-                    f"#{row[0]} — {row[1]} — {row[2] or 'N/D'} — {row[3] or 'N/D'} — {'activa' if row[5] else 'inactiva'}"
-                )
+            # Same boundary as the Telegram listing: every stored rule, with the
+            # canonical `AlertRule` resolved through `rule_from_listing()` (a
+            # structured row, or a legacy row reconstructed by `rule_from_row`).
+            # Read-only: nothing is written, not even the legacy rows.
+            for row in repository.list_alert_rules():
+                rule = repository.rule_from_listing(row)
+                print(format_alert_listing(row[0], rule, bool(row[6])))
             return
         if a.alert_command == "test":
             # Read-only simulator: no scraper, no LLM, no Telegram, no writes.
@@ -206,10 +218,8 @@ def main():
         for rule_id, query, deal, rule, result in service.dry_run_active_rules(a.pages):
             price_unit = _price_unit_label(rule)
             extraction = deal.product_extraction
-            product_match = (
-                not rule.product_type
-                or (getattr(extraction, "product_type", "") or "").casefold()
-                == rule.product_type.casefold()
+            product_match = not rule.product_type or product_type_matches(
+                rule.product_type, getattr(extraction, "product_type", None)
             )
             brand_match = (
                 not rule.brand

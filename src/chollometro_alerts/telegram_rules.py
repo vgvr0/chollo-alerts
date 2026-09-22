@@ -7,6 +7,15 @@ from .intent import intent_to_rule, validate_intent
 
 logger = logging.getLogger(__name__)
 
+# How the persisted price dimension is rendered back to the user. An absolute
+# price is the total price of the deal, so it has no "/unit" suffix at all.
+PRICE_UNIT_LABELS = {"liter": "L", "unit": "ud", "kilogram": "kg"}
+
+
+def price_suffix(price_unit):
+    label = PRICE_UNIT_LABELS.get(price_unit or "absolute")
+    return f"€/{label}" if label else "€"
+
 
 class TelegramRuleController:
     def __init__(
@@ -129,13 +138,13 @@ class TelegramRuleController:
             return f"{float(row[4]):.2f}".replace(".", ",")
 
         def unit(row):
-            return "L" if row[5] == "liter" else "ud"
+            return price_suffix(row[5])
 
         if intent.action == "list":
             if not rows:
                 return "🔔 Tus alertas:\n\nNo tienes alertas configuradas."
             return "🔔 Tus alertas:\n\n" + "\n".join(
-                f"#{r[0]} — {r[1]} — < {price(r)} €/{unit(r)} — "
+                f"#{r[0]} — {r[1]} — < {price(r)} {unit(r)} — "
                 f"{'activa' if r[6] else 'inactiva'}"
                 for r in rows
             )
@@ -149,8 +158,10 @@ class TelegramRuleController:
         subject = intent.query or intent.product_type or intent.brand or "alerta"
         if intent.action in {"create", "update"}:
             amount = f"{intent.max_price:.2f}".replace(".", ",")
-            unit_name = "L" if intent.price_unit == "liter" else "ud"
-            reply = f"✅ {verb}: {subject} por debajo de {amount} €/{unit_name}"
+            reply = (
+                f"✅ {verb}: {subject} por debajo de "
+                f"{amount} {price_suffix(intent.price_unit)}"
+            )
             if baseline_count is not None and intent.action == "create":
                 reply += f"\n🔎 {baseline_count} ofertas actuales guardadas como referencia.\nTe avisaré de las nuevas que cumplan la condición."
             return reply

@@ -105,6 +105,60 @@ Production scans, `run-rules --dry-run` and `alert test` share the same path
 `InterestEngine`) and differ only in where the deals come from, which side effects
 are allowed and how the verdict is presented.
 
+### Product matching
+
+The alert `product` is compared with the extracted `product_type` word by word,
+after normalising case, accents, punctuation and a simple Spanish plural
+(`zapatilla` matches `zapatillas`). The extracted type may carry qualifiers
+*after* the product, so `zapatillas` matches `Zapatillas running asfalto` and
+`mini pc` matches `Mini PC NAS`.
+
+This is still a deterministic comparison, not semantic matching: `zapatillas`
+never matches `running shoes`, and a trailing qualifier on its own is not a
+match (`leche` does not match `chocolate con leche`). When the product fact is
+missing the verdict is unchanged, so the replay keeps reporting it as
+`NOT_EVALUABLE` instead of a wrong rejection.
+
+### Creating and correcting alerts
+
+Rules are created, updated and removed from Telegram using plain language, and
+the price dimension follows the sentence:
+
+```text
+Avísame de zapatillas ASICS por menos de 200 €        → max_price = 200
+Avísame de Coca-Cola por menos de 0,50 € por unidad   → max_price_per_unit = 0.50
+Avísame de leche por menos de 0,79 € por litro        → max_price_per_liter = 0.79
+Cambia la alerta 2 para avisarme de zapatillas ASICS por menos de 200 €
+```
+
+An update finds the existing rule by its `query` and `brand` (the numeric id in
+the message is only the operator's reference), rewrites the `max_price` /
+`price_unit` columns, replaces the structured rule and keeps the product and
+brand that were already stored. After that, `alert test <id>` replays the
+corrected price semantics. The CLI equivalents for a *new* rule are
+`chollometro-alerts alert parse "<texto>"` and
+`chollometro-alerts alert add "<texto>"`.
+
+The same correction can be applied from Python through the canonical boundary,
+without touching the legacy columns by hand:
+
+```python
+from chollometro_alerts.intent import AlertIntent, intent_to_rule
+from chollometro_alerts.repository import DealRepository
+
+repository = DealRepository("deals.sqlite3")
+intent = AlertIntent(
+    action="update",
+    query="zapatillas",
+    product_type="zapatillas",
+    brand="ASICS",
+    max_price=200,
+    price_unit="absolute",
+)
+repository.apply_alert_intent(intent)
+repository.attach_alert_rule(2, intent_to_rule(intent), "texto original")
+```
+
 ## 🧪 Testing an alert against historical deals
 
 `alert test` replays a persisted rule against the deals already stored locally, so

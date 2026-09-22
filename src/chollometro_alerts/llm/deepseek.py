@@ -149,7 +149,14 @@ class DeepSeekProductExtractor:
         schema = AlertIntent.model_json_schema()
         payload = {
             "model": self.model,
-            "instructions": "Convierte el mensaje en una intención JSON de reglas de alertas. No inventes precios ni datos faltantes.",
+            "instructions": (
+                "Convierte el mensaje en una intención JSON de reglas de "
+                "alertas. 'query' es solo el término de búsqueda del producto: "
+                "nunca la frase completa, el precio ni la moneda. El precio es "
+                "el precio total de la oferta (price_unit 'absolute') salvo "
+                "que el mensaje diga explícitamente 'por unidad', 'por litro' "
+                "o 'por kilo'. No inventes precios ni datos faltantes."
+            ),
             "input": text,
             "temperature": 0,
             "reasoning": {"effort": "none"},
