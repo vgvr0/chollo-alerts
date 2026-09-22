@@ -1,6 +1,8 @@
 """Deterministic product facts and validated provider enrichment."""
 
 import json
+import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 
@@ -39,6 +41,55 @@ def normalize_product_extraction(extraction: ProductExtraction) -> ProductExtrac
     if data["units"] is not None and data["unit_weight_kg"] is not None:
         data["total_weight_kg"] = Decimal(data["units"]) * data["unit_weight_kg"]
     return ProductExtraction.model_validate(data)
+
+
+_WORD_SEPARATORS = re.compile(r"[^\w]+", re.UNICODE)
+
+
+def _fold(text: str) -> str:
+    """Case- and accent-insensitive form; words are never rewritten."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return decomposed.encode("ascii", "ignore").decode("ascii").casefold()
+
+
+def product_tokens(text: str) -> list[str]:
+    """Word-aligned tokens of a product term: 'Zapatillas ASICS' -> 2 tokens."""
+    return [token for token in _WORD_SEPARATORS.split(_fold(text)) if token]
+
+
+def _same_word(left: str, right: str) -> bool:
+    """True for the same word, tolerating only a simple Spanish plural."""
+    return (
+        left == right
+        or left == f"{right}s"
+        or left == f"{right}es"
+        or right == f"{left}s"
+        or right == f"{left}es"
+    )
+
+
+def product_type_matches(expected: str | None, extracted: str | None) -> bool:
+    """Compare an alert product with the extracted product type.
+
+    This is deliberately *not* semantic matching. It only tolerates case,
+    accents, punctuation and a simple plural, and it requires the words of the
+    expected product to appear, in the same order, at the head of the extracted
+    type: 'zapatillas' matches 'Zapatillas running asfalto' and 'mini pc'
+    matches 'Mini PC NAS'. It can never match a synonym ('running shoes'), and
+    a trailing qualifier is not enough ('chocolate con leche' is not 'leche').
+    A missing fact on either side is not a match; callers keep deciding whether
+    that is a rejection or an unknown fact.
+    """
+    if not expected or not extracted:
+        return False
+    head = product_tokens(expected)
+    extracted_tokens = product_tokens(extracted)
+    if not head or len(extracted_tokens) < len(head):
+        return False
+    return all(
+        _same_word(expected_token, extracted_token)
+        for expected_token, extracted_token in zip(head, extracted_tokens, strict=False)
+    )
 
 
 def _deterministic(text: str) -> ProductExtraction:

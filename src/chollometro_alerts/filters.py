@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from .config import InterestRule
 from .models import Deal
+from .product import product_type_matches
 
 MILK = ("leche", "central lechera asturiana", "puleva", "pascual", "kaiku")
 BEER = (
@@ -51,10 +52,8 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
     text = deal.title.casefold()
     merchant = (deal.merchant or "").casefold()
     extraction = deal.product_extraction
-    if rule.product_type and (
-        not extraction
-        or not extraction.product_type
-        or extraction.product_type.casefold() != rule.product_type.casefold()
+    if rule.product_type and not product_type_matches(
+        rule.product_type, getattr(extraction, "product_type", None)
     ):
         return FilterResult(False, "REJECTED_PRODUCT")
     if rule.brand and (
