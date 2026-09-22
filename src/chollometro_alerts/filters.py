@@ -38,6 +38,11 @@ class FilterResult:
     reason: str
 
 
+class InterestEngine:
+    def evaluate(self, deal: Deal, rule: InterestRule) -> FilterResult:
+        return apply_rule(deal, rule)
+
+
 def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
     text = deal.title.casefold()
     merchant = (deal.merchant or "").casefold()

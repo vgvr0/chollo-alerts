@@ -69,7 +69,17 @@ class Client:
 class Repo:
     def __init__(self):
         self.ids = set()
+        self.extractions = {}
         self.notified = set()
+
+    def exists(self, deal_id):
+        return deal_id in self.ids
+
+    def get_extraction(self, deal_id):
+        return self.extractions.get(deal_id)
+
+    def save_extraction(self, deal_id, payload):
+        self.extractions[deal_id] = payload
 
     def upsert(self, d):
         self.ids.add(d.deal_id)
