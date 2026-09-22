@@ -5,6 +5,7 @@ import requests
 
 from chollometro_alerts.client import ChollometroClient
 from chollometro_alerts.config import InterestRule
+from chollometro_alerts.errors import ChollometroHTTPError, ChollometroTimeoutError
 from chollometro_alerts.filters import category_for
 from chollometro_alerts.models import Deal
 from chollometro_alerts.parser import parse_search
@@ -159,9 +160,10 @@ def test_check_after_baseline_sends_one_new_message():
 
 
 class Response:
-    def __init__(self, status):
+    def __init__(self, status, headers=None, text=""):
         self.status_code = status
-        self.text = ""
+        self.headers = headers or {}
+        self.text = text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -169,25 +171,50 @@ class Response:
 
 
 class Session:
+    """Offline HTTP transport: scripted responses, never the real network."""
+
     def __init__(self, value):
         self.value = value
         self.headers = {}
+        self.calls = []
 
-    def get(self, *a, **k):
-        if isinstance(self.value, Exception):
-            raise self.value
-        return Response(self.value)
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs.get("timeout")))
+        value = self.value.pop(0) if isinstance(self.value, list) else self.value
+        if isinstance(value, Exception):
+            raise value
+        return value if isinstance(value, Response) else Response(value)
+
+
+def offline_client(session, **kwargs):
+    """Client whose backoff is recorded instead of slept."""
+    delays = []
+    return ChollometroClient(session, sleep=delays.append, **kwargs), delays
 
 
 @pytest.mark.parametrize("status", [403, 429, 500])
 def test_http_errors(status):
-    with pytest.raises(requests.HTTPError):
-        ChollometroClient(Session(status)).search("leche")
+    session = Session(status)
+    client, delays = offline_client(session)
+    with pytest.raises(requests.HTTPError) as excinfo:
+        client.search("leche")
+    assert isinstance(excinfo.value, ChollometroHTTPError)
+    assert excinfo.value.status_code == status
+    assert excinfo.value.error_type == f"HTTP_{status}"
+    # 403 is permanent; 429/500 are retried within the configured budget.
+    if status == 403:
+        assert len(session.calls) == 1 and delays == []
+    else:
+        assert len(session.calls) == 3 and delays == [0.5, 1.0]
 
 
 def test_timeout():
-    with pytest.raises(requests.Timeout):
-        ChollometroClient(Session(requests.Timeout())).search("leche")
+    session = Session(requests.Timeout())
+    client, delays = offline_client(session, retries=1)
+    with pytest.raises(requests.Timeout) as excinfo:
+        client.search("leche")
+    assert isinstance(excinfo.value, ChollometroTimeoutError)
+    assert (len(session.calls), delays) == (2, [0.5])
 
 
 def test_interest_rules():

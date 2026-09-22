@@ -3,6 +3,7 @@ import time
 
 import requests
 
+from .errors import ChollometroError
 from .intent import intent_to_rule, validate_intent
 
 logger = logging.getLogger(__name__)
@@ -67,15 +68,30 @@ class TelegramRuleController:
             if intent.action == "create" and self.service is not None:
                 query = intent.query or intent.product_type or intent.brand
                 rule = next((r for r in rows if r[1] == query), None)
-                if (
-                    rule is not None
-                    and self.repository.get_rule(rule[0])[7] == "INITIALIZING"
-                ):
+                # A rule whose baseline could not be taken stays disabled, and
+                # retrying the same message must be allowed to complete it.
+                if rule is not None and self.repository.get_rule(rule[0])[7] in {
+                    "INITIALIZING",
+                    "INITIALIZING_FAILED",
+                }:
                     baseline_count = self.service.baseline_rule(rule[0], query)
                     rows = self.repository.list_alert_rules()
             reply = self._format(intent, rows, baseline_count)
         except ValueError as exc:
             reply = f"Necesito una aclaración: {exc}"
+        except ChollometroError as exc:
+            # Never answer "alerta creada, 0 ofertas" when Chollometro failed:
+            # the rule stays inactive and no baseline was stored.
+            reply = (
+                f"⚠️ No he podido consultar Chollometro ahora mismo "
+                f"({exc.error_type}). La alerta no se ha activado y no se ha "
+                "guardado ninguna referencia. Vuelve a enviar el mensaje para "
+                "reintentarlo."
+            )
+            logger.warning(
+                "alert_baseline_failed error_type=%s",
+                exc.error_type,
+            )
         self.send_message(reply)
         return reply
 

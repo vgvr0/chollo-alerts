@@ -82,6 +82,49 @@ class LLMSettings:
         return cls(True, provider, key, model, timeout, retries)
 
 
+def _float(name, default):
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} debe ser numérico") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigurationError(f"{name} debe ser un número positivo")
+    return value
+
+
+def _non_negative_int(name, default):
+    try:
+        value = int(os.getenv(name, "") or default)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} debe ser un entero") from exc
+    if value < 0:
+        raise ConfigurationError(f"{name} debe ser >= 0")
+    return value
+
+
+@dataclass(frozen=True)
+class ChollometroSettings:
+    """Centralised HTTP policy for every request to Chollometro.
+
+    One timeout, one bounded retry budget and one exponential backoff source,
+    so no request can wait forever and no call site invents its own numbers.
+    """
+
+    timeout: float = 20.0
+    retries: int = 2
+    backoff_seconds: float = 0.5
+    max_backoff_seconds: float = 30.0
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        timeout = _float("CHOLLOMETRO_TIMEOUT_SECONDS", 20.0)
+        retries = _non_negative_int("CHOLLOMETRO_MAX_RETRIES", 2)
+        backoff = _float("CHOLLOMETRO_RETRY_BACKOFF_SECONDS", 0.5)
+        max_backoff = _float("CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS", 30.0)
+        return cls(timeout, retries, backoff, max_backoff)
+
+
 def _list(name):
     return tuple(
         x.strip().casefold() for x in os.getenv(name, "").split(",") if x.strip()

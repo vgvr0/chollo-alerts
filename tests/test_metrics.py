@@ -127,5 +127,7 @@ def test_empty_check_prints_zero_metrics(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("sys.argv", ["chollometro-alerts", "check", "--dry-run"])
     cli.main()
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 10
-    assert all(line.endswith("=0") for line in lines)
+    # An empty-but-successful scan says so explicitly, next to its zero counters.
+    assert lines[:2] == ["SCAN_STATUS=SUCCESS", "SCAN_ERROR_TYPE=N/D"]
+    assert len(lines) == 12
+    assert all(line.endswith("=0") for line in lines[2:])

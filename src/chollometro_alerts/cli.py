@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .client import ChollometroClient
 from .config import PROJECT_ROOT, ConfigurationError, TelegramSettings, load_rules
+from .errors import SCAN_FAILED, ChollometroError
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .product import product_type_matches
@@ -33,6 +34,19 @@ PRICE_REJECTIONS = {
 }
 
 REPLAY_SAMPLE_SIZE = 10
+
+
+def report_scan_failure(error: ChollometroError) -> None:
+    """Operational summary of a failed provider scan (never secrets)."""
+    print(f"SCAN_STATUS={SCAN_FAILED}")
+    print(f"ERROR_TYPE={error.error_type}")
+    print(f"MESSAGE={error}")
+    logging.getLogger(__name__).error(
+        "scan_failed provider=chollometro error_type=%s http_status=%s message=%s",
+        error.error_type,
+        error.status_code,
+        error,
+    )
 
 
 def format_alert_listing(rule_id, rule, enabled):
@@ -251,6 +265,8 @@ def main():
                 bucket["REJECTED_BRAND"] += 1
             if result.reason in PRICE_REJECTIONS:
                 bucket["REJECTED_PRICE"] += 1
+        # Distinguishes a completed dry run from one Chollometro could not serve.
+        print(f"SCAN_STATUS={service.last_scan_status}")
         print("SUMMARY")
         for rule_id, values in summary.items():
             print(f"RULE_ID={rule_id}")
@@ -318,7 +334,13 @@ def main():
             )
     service = AlertService(ChollometroClient(), DealRepository(a.db), None)
     if a.command == "baseline":
-        print(service.baseline(["leche", "cerveza"], a.pages, a.dry_run))
+        try:
+            count = service.baseline(["leche", "cerveza"], a.pages, a.dry_run)
+        except ChollometroError as exc:
+            # No baseline is written on failure: the previous one is untouched.
+            report_scan_failure(exc)
+            raise SystemExit(1) from exc
+        print(count)
         return
     notifier = (
         DryRunNotifier()
@@ -338,3 +360,7 @@ def main():
     finally:
         if hasattr(service, "last_summary"):
             print(service.last_summary.format_metrics())
+    if service.last_scan_status == SCAN_FAILED:
+        # `check` is the legacy CLI entry point: the exit code is its failure
+        # signal for cron/monitoring, the metrics line is the detail.
+        raise SystemExit(1)
