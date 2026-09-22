@@ -2,6 +2,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 
+from .intent import AlertIntent
 from .models import Deal
 
 
@@ -17,7 +18,91 @@ class DealRepository:
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS alert_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
+            product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
+            price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(query, product_type, brand, max_price, price_unit)
+            )"""
+        )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, processed_at TEXT NOT NULL)"
+        )
         self.db.commit()
+
+    def list_alert_rules(self, enabled_only=False):
+        sql = "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        rows = self.db.execute(sql).fetchall()
+        return rows
+
+    def apply_alert_intent(self, intent: AlertIntent):
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC).isoformat()
+        if intent.action == "list":
+            return self.list_alert_rules()
+        query = intent.query or intent.product_type or intent.brand
+        row = self.db.execute(
+            "SELECT id FROM alert_rules WHERE query=? AND COALESCE(brand,'')=COALESCE(?, '')",
+            (query, intent.brand),
+        ).fetchone()
+        if intent.action == "create":
+            duplicate = self.db.execute(
+                "SELECT 1 FROM alert_rules WHERE query=? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
+                (
+                    query,
+                    intent.product_type,
+                    intent.brand,
+                    str(intent.max_price),
+                    intent.price_unit,
+                ),
+            ).fetchone()
+            if not duplicate:
+                self.db.execute(
+                    "INSERT INTO alert_rules(query,product_type,brand,max_price,price_unit,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        query,
+                        intent.product_type,
+                        intent.brand,
+                        str(intent.max_price),
+                        intent.price_unit,
+                        1,
+                        now,
+                        now,
+                    ),
+                )
+        elif row:
+            if intent.action == "update":
+                self.db.execute(
+                    "UPDATE alert_rules SET max_price=?,price_unit=?,updated_at=?,enabled=1 WHERE id=?",
+                    (str(intent.max_price), intent.price_unit, now, row[0]),
+                )
+            elif intent.action in {"delete", "disable"}:
+                self.db.execute(
+                    "UPDATE alert_rules SET enabled=0,updated_at=? WHERE id=?",
+                    (now, row[0]),
+                )
+            elif intent.action == "enable":
+                self.db.execute(
+                    "UPDATE alert_rules SET enabled=1,updated_at=? WHERE id=?",
+                    (now, row[0]),
+                )
+        self.db.commit()
+        return self.list_alert_rules()
+
+    def claim_telegram_update(self, update_id):
+        from datetime import UTC, datetime
+
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO telegram_updates VALUES (?,?)",
+            (update_id, datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+        return cur.rowcount == 1
 
     def error_alert_allowed(self, error_type, component, message, cooldown_minutes=60):
         import hashlib

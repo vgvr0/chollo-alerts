@@ -9,6 +9,7 @@ from time import perf_counter
 import requests
 
 from ..config import ConfigurationError
+from ..intent import AlertIntent
 from ..product import ProductExtraction, extract_product
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,15 @@ class DeepSeekProductExtractor:
         if not math.isfinite(self.timeout) or self.timeout <= 0 or self.retries < 0:
             raise ConfigurationError("DeepSeek requiere timeout > 0 y retries >= 0")
         self.session = session or requests.Session()
-        self.llm_calls = self.llm_failures = self.tokens = 0
+        self.llm_calls = self.llm_failures = 0
+        self.tokens = 0
+        self.usage = {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+        }
         self.last_error: str | None = None
 
     def __call__(
@@ -65,6 +74,7 @@ class DeepSeekProductExtractor:
             ),
             "input": product_text,
             "temperature": 0,
+            "reasoning": {"effort": "none"},
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -132,9 +142,44 @@ class DeepSeekProductExtractor:
             )
             return result
 
+    def interpret_alert(self, text: str) -> AlertIntent:
+        schema = AlertIntent.model_json_schema()
+        payload = {
+            "model": self.model,
+            "instructions": "Convierte el mensaje en una intención JSON de reglas de alertas. No inventes precios ni datos faltantes.",
+            "input": text,
+            "temperature": 0,
+            "reasoning": {"effort": "none"},
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "alert_intent",
+                    "schema": schema,
+                }
+            },
+        }
+        response = self.session.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        self._record_usage(body.get("usage") or {})
+        content = "".join(
+            part["text"]
+            for item in body["output"]
+            if item.get("type") == "message"
+            for part in item.get("content", [])
+            if part.get("type") == "output_text"
+        )
+        return AlertIntent.model_validate(json.loads(content))
+
     def _parse_response(self, response, schema) -> ProductExtraction:
         body = response.json()
-        self.tokens += (body.get("usage") or {}).get("total_tokens", 0) or 0
+        usage = body.get("usage") or {}
+        self._record_usage(usage)
         if body.get("status") != "completed":
             raise ValueError("Incomplete DeepSeek response")
         content = "".join(
@@ -149,10 +194,25 @@ class DeepSeekProductExtractor:
             raise ValueError("DeepSeek response does not match product schema")
         return ProductExtraction.model_validate({**facts, "extraction_source": "llm"})
 
+    def _record_usage(self, usage):
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        self.usage["input_tokens"] += usage.get("input_tokens", 0) or 0
+        self.usage["cached_tokens"] += input_details.get("cached_tokens", 0) or 0
+        self.usage["output_tokens"] += usage.get("output_tokens", 0) or 0
+        self.usage["reasoning_tokens"] += output_details.get("reasoning_tokens", 0) or 0
+        self.usage["total_tokens"] += usage.get("total_tokens", 0) or 0
+        self.tokens = self.usage["total_tokens"]
+
     @property
     def metrics(self):
         return {
             "LLM_CALLS": self.llm_calls,
             "LLM_FAILURES": self.llm_failures,
             "LLM_TOKENS": self.tokens,
+            "LLM_INPUT_TOKENS": self.usage["input_tokens"],
+            "LLM_CACHED_TOKENS": self.usage["cached_tokens"],
+            "LLM_OUTPUT_TOKENS": self.usage["output_tokens"],
+            "LLM_REASONING_TOKENS": self.usage["reasoning_tokens"],
+            "LLM_TOTAL_TOKENS": self.usage["total_tokens"],
         }

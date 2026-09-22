@@ -143,3 +143,38 @@ def test_baseline_still_works_without_telegram_credentials(cli_env, monkeypatch)
     cli.main()
     notifier.assert_not_called()
     client.recent.assert_called_once()
+
+
+def test_telegram_poll_cli_wires_token_to_api_and_chat_id_to_authorization(
+    cli_env, monkeypatch
+):
+    root, _, _ = cli_env
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:TEST_BOT_TOKEN")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "987654321")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["chollometro-alerts", "--db", str(root / "rules.sqlite3"), "telegram-poll"],
+    )
+    extractor = Mock()
+    monkeypatch.setattr(cli, "DeepSeekProductExtractor", lambda: extractor)
+    response = Mock()
+    response.json.return_value = {"result": []}
+    response.raise_for_status = Mock()
+    get = Mock(return_value=response)
+    monkeypatch.setattr("chollometro_alerts.telegram_rules.requests.get", get)
+    monkeypatch.setattr(cli, "DealRepository", lambda _: Mock())
+    seen = {}
+    original_poll_once = cli.TelegramRuleController.poll_once
+
+    def capture_controller(controller):
+        seen["controller"] = controller
+        return original_poll_once(controller)
+
+    monkeypatch.setattr(cli.TelegramRuleController, "poll_once", capture_controller)
+
+    cli.main()
+
+    url = get.call_args.args[0]
+    assert url == "https://api.telegram.org/bot123456:TEST_BOT_TOKEN/getUpdates"
+    assert "987654321" not in url
+    assert seen["controller"].authorized_chat_id == "987654321"

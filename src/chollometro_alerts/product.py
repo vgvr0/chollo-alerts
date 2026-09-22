@@ -29,6 +29,14 @@ class ProductExtraction(BaseModel):
         return value
 
 
+def normalize_product_extraction(extraction: ProductExtraction) -> ProductExtraction:
+    """Fill deterministic derived volume fields after fact extraction."""
+    data = extraction.model_dump()
+    if data["units"] is not None and data["unit_volume_l"] is not None:
+        data["total_volume_l"] = Decimal(data["units"]) * data["unit_volume_l"]
+    return ProductExtraction.model_validate(data)
+
+
 def _deterministic(text: str) -> ProductExtraction:
     volume = extract_volume(text)
     # These are intentionally conservative. A wrong brand/type is worse than null.
@@ -42,7 +50,7 @@ def _deterministic(text: str) -> ProductExtraction:
         ),
         None,
     )
-    return ProductExtraction(
+    result = ProductExtraction(
         product_type=product_type,
         units=volume[0] if volume else None,
         unit_volume_l=volume[1] if volume else None,
@@ -50,6 +58,7 @@ def _deterministic(text: str) -> ProductExtraction:
         confidence=Decimal("0.98") if volume else Decimal("0.25"),
         extraction_source="deterministic",
     )
+    return normalize_product_extraction(result)
 
 
 def extract_product(
@@ -68,7 +77,7 @@ def extract_product(
         deterministic.total_volume_l is not None
         and deterministic.confidence >= Decimal("0.95")
     ):
-        return deterministic
+        return normalize_product_extraction(deterministic)
     try:
         raw = (
             llm(product_text, deal_id=deal_id)
@@ -84,9 +93,9 @@ def extract_product(
                 {**raw, "extraction_source": "llm"}
             )
         if llm_result.extraction_source == "deterministic":
-            return deterministic
+            return normalize_product_extraction(deterministic)
     except Exception:  # noqa: BLE001 - invalid providers use deterministic fallback
-        return deterministic
+        return normalize_product_extraction(deterministic)
     merged = deterministic.model_dump()
     for field in (
         "product_type",
@@ -107,4 +116,4 @@ def extract_product(
         )
         else "llm"
     )
-    return ProductExtraction.model_validate(merged)
+    return normalize_product_extraction(ProductExtraction.model_validate(merged))
