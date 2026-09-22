@@ -65,6 +65,11 @@ def parse_search(html: str, query: str) -> list[Deal]:
         title = data.get("title") or link.get_text(" ", strip=True)
         description = article.get_text(" ", strip=True)
         category = category_for(title, query)
+        if (
+            query.casefold() in {"leche", "cerveza", "cervezas"}
+            and category == "generic"
+        ):
+            continue
         if not category:
             continue
         temp = None
@@ -112,6 +117,14 @@ def parse_search(html: str, query: str) -> list[Deal]:
                 category,
                 published,
                 product_text=product_text,
+                description=description,
+                original_price=None,
+                image=(
+                    article.select_one("img").get("src")
+                    if article.select_one("img")
+                    else None
+                ),
+                source_query=query,
             )
         )
     return deals

@@ -2,6 +2,41 @@
 
 Consulta búsquedas públicas de Chollometro y envía por Telegram los nuevos chollos de leche y cerveza.
 
+## Natural-language alerts
+
+Las alertas pueden expresarse en lenguaje natural desde Telegram, por ejemplo:
+
+```text
+Avísame de cerveza Mahou por debajo de 1,20 €/litro
+Quiero ofertas de leche entera por debajo de 0,90 €/litro
+```
+
+El LLM solo transforma la petición en una `AlertRule` estructurada y validada. La evaluación posterior de ofertas es determinista y no vuelve a llamar al LLM.
+
+También se puede inspeccionar o guardar una regla directamente:
+
+```bash
+chollometro-alerts alert parse "Avísame de cerveza Mahou por debajo de 1,20 €/litro"
+chollometro-alerts alert add "Avísame de cerveza Mahou por debajo de 1,20 €/litro"
+chollometro-alerts alert list
+```
+
+El flujo es: lenguaje natural → parsing LLM una vez → regla estructurada persistida → evaluación determinista. `ProductExtractor` puede usar el LLM por separado para extraer atributos de ofertas nuevas.
+
+`AlertRule.constraints` admite `max_price`, `max_price_per_liter`,
+`max_price_per_unit`, `min_quantity`, `min_volume_l` y `min_temperature`, y todos
+los límites presentes deben cumplirse. El precio por unidad lo calcula
+`PricingEngine` (precio total dividido entre las unidades extraídas); si la
+cantidad no es fiable, la oferta se rechaza con `REJECTED_UNKNOWN_QUANTITY` en
+lugar de asumir una unidad. Los límites `max_price*` son exclusivos: el precio
+debe ser estrictamente menor.
+
+`run-rules --dry-run` recorre las reglas activas con el mismo camino que
+`run-rules` (`repository.rule_from_row()` → `AlertRule` → `InterestRule` →
+`PricingEngine` → `InterestEngine`) y solo cambia los efectos: no envía Telegram
+ni escribe observaciones, baseline, extracciones o `notified_at`. Cada línea del
+informe incluye `price_unit` y `price_per_unit`.
+
 ## Fuente investigada
 
 La navegación con Chrome DevTools/CDP mostró que la ruta pública del frontend es `GET https://www.chollometro.com/search?q=<término>&page=<n>`. La respuesta contiene HTML server-side: cada oferta es `article#thread_<id>` con `data-t-d={"id":...}`. El HTML incluye título (`a.thread-title`), URL, precio (`.thread-price`), tienda (`[data-t="merchantLink"]`), temperatura (botón con `...°`) y antigüedad (`Publicado hace ...`). No se necesitó cookie ni sesión para esta ruta. No se encontró una API JSON pública necesaria para la extracción; por estabilidad y simplicidad se usa este HTML server-side.

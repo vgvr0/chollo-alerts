@@ -98,6 +98,12 @@ class InterestRule:
     include_merchants: tuple[str, ...] = ()
     exclude_merchants: tuple[str, ...] = ()
     max_price_per_liter: Decimal | None = None
+    max_price_per_kilogram: Decimal | None = None
+    max_price_per_unit: Decimal | None = None
+    min_quantity: Decimal | None = None
+    min_volume_l: Decimal | None = None
+    product_type: str | None = None
+    brand: str | None = None
 
 
 def _decimal(name):

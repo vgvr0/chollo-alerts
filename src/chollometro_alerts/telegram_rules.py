@@ -1,17 +1,30 @@
+import logging
+import time
+
 import requests
 
-from .intent import validate_intent
+from .intent import intent_to_rule, validate_intent
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramRuleController:
     def __init__(
-        self, *, bot_token, authorized_chat_id, repository, translator, timeout=20
+        self,
+        *,
+        bot_token,
+        authorized_chat_id,
+        repository,
+        translator,
+        timeout=20,
+        service=None,
     ):
         self.url = f"https://api.telegram.org/bot{bot_token}"
         self.authorized_chat_id = str(authorized_chat_id)
         self.repository = repository
         self.translator = translator
         self.timeout = timeout
+        self.service = service
 
     def process_update(self, update):
         update_id = update.get("update_id")
@@ -27,7 +40,31 @@ class TelegramRuleController:
         try:
             intent = validate_intent(self.translator.interpret_alert(text))
             rows = self.repository.apply_alert_intent(intent)
-            reply = self._format(intent, rows)
+            if intent.action in {"create", "update"}:
+                target = next(
+                    (
+                        row
+                        for row in rows
+                        if row[1]
+                        == (intent.query or intent.product_type or intent.brand)
+                    ),
+                    None,
+                )
+                if target:
+                    self.repository.attach_alert_rule(
+                        target[0], intent_to_rule(intent), text
+                    )
+            baseline_count = None
+            if intent.action == "create" and self.service is not None:
+                query = intent.query or intent.product_type or intent.brand
+                rule = next((r for r in rows if r[1] == query), None)
+                if (
+                    rule is not None
+                    and self.repository.get_rule(rule[0])[7] == "INITIALIZING"
+                ):
+                    baseline_count = self.service.baseline_rule(rule[0], query)
+                    rows = self.repository.list_alert_rules()
+            reply = self._format(intent, rows, baseline_count)
         except ValueError as exc:
             reply = f"Necesito una aclaración: {exc}"
         self.send_message(reply)
@@ -44,6 +81,40 @@ class TelegramRuleController:
         for update in response.json().get("result", []):
             self.process_update(update)
 
+    def listen_forever(self, stop_event=None, poll_timeout=45, max_backoff=60):
+        """Consume Telegram updates until stopped, tolerating transient failures."""
+        offset = None
+        backoff = 1
+        while stop_event is None or not stop_event.is_set():
+            try:
+                params = {"timeout": poll_timeout}
+                if offset is not None:
+                    params["offset"] = offset
+                response = requests.get(
+                    f"{self.url}/getUpdates", params=params, timeout=poll_timeout + 10
+                )
+                response.raise_for_status()
+                updates = response.json().get("result", [])
+                for update in updates:
+                    update_id = update.get("update_id")
+                    if update_id is not None:
+                        offset = max(offset or update_id, update_id + 1)
+                    logger.info("telegram_update_received update_id=%s", update_id)
+                    try:
+                        self.process_update(update)
+                    except Exception:
+                        logger.exception(
+                            "telegram_update_failed update_id=%s", update_id
+                        )
+                backoff = 1
+            except (requests.RequestException, ValueError):
+                logger.warning("telegram_poll_error retry_in_seconds=%s", backoff)
+                if stop_event is not None:
+                    stop_event.wait(backoff)
+                else:
+                    time.sleep(backoff)
+                backoff = min(max_backoff, backoff * 2)
+
     def send_message(self, text):
         response = requests.post(
             f"{self.url}/sendMessage",
@@ -53,14 +124,35 @@ class TelegramRuleController:
         response.raise_for_status()
 
     @staticmethod
-    def _format(intent, rows):
+    def _format(intent, rows, baseline_count=None):
+        def price(row):
+            return f"{float(row[4]):.2f}".replace(".", ",")
+
+        def unit(row):
+            return "L" if row[5] == "liter" else "ud"
+
         if intent.action == "list":
-            return (
-                "No tienes alertas configuradas."
-                if not rows
-                else "\n".join(
-                    f"#{r[0]} {r[1]} < {r[4]} €/{r[5]} ({'activa' if r[6] else 'inactiva'})"
-                    for r in rows
-                )
+            if not rows:
+                return "🔔 Tus alertas:\n\nNo tienes alertas configuradas."
+            return "🔔 Tus alertas:\n\n" + "\n".join(
+                f"#{r[0]} — {r[1]} — < {price(r)} €/{unit(r)} — "
+                f"{'activa' if r[6] else 'inactiva'}"
+                for r in rows
             )
-        return f"Regla {intent.action} aplicada correctamente."
+        verb = {
+            "create": "Alerta creada",
+            "update": "Alerta actualizada",
+            "delete": "Alerta eliminada",
+            "enable": "Alerta activada",
+            "disable": "Alerta desactivada",
+        }[intent.action]
+        subject = intent.query or intent.product_type or intent.brand or "alerta"
+        if intent.action in {"create", "update"}:
+            amount = f"{intent.max_price:.2f}".replace(".", ",")
+            unit_name = "L" if intent.price_unit == "liter" else "ud"
+            reply = f"✅ {verb}: {subject} por debajo de {amount} €/{unit_name}"
+            if baseline_count is not None and intent.action == "create":
+                reply += f"\n🔎 {baseline_count} ofertas actuales guardadas como referencia.\nTe avisaré de las nuevas que cumplan la condición."
+            return reply
+        icon = {"delete": "🗑️", "disable": "⏸️", "enable": "▶️"}[intent.action]
+        return f"{icon} {verb}: {subject}"

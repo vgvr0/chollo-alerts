@@ -20,6 +20,7 @@ class ChollometroClient:
         self.session.headers.update(
             {"User-Agent": "chollometro-alerts/0.1 (+https://www.chollometro.com)"}
         )
+        self.last_search = {}
 
     def search(self, query: str, page: int = 1):
         params = {"q": query}
@@ -44,7 +45,20 @@ class ChollometroClient:
         if last and "response" not in locals():
             raise last
         response.encoding = "utf-8"
-        return parse_search(response.text, query)
+        from bs4 import BeautifulSoup
+
+        fetched = len(
+            BeautifulSoup(response.text, "html.parser").select('article[id^="thread_"]')
+        )
+        deals = parse_search(response.text, query)
+        self.last_search = {
+            "query": query,
+            "page": page,
+            "http_status": response.status_code,
+            "fetched_items": fetched,
+            "parsed_items": len(deals),
+        }
+        return deals
 
     def recent(self, queries: list[str], pages: int = 1):
         result = {}

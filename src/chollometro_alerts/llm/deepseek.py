@@ -8,6 +8,7 @@ from time import perf_counter
 
 import requests
 
+from ..alert_rule import AlertRule
 from ..config import ConfigurationError
 from ..intent import AlertIntent
 from ..product import ProductExtraction, extract_product
@@ -61,6 +62,8 @@ class DeepSeekProductExtractor:
         schema = ProductExtraction.model_json_schema()
         # Provenance is assigned locally, never trusted to the model.
         schema["properties"].pop("extraction_source")
+        schema["properties"].pop("unit_weight_kg", None)
+        schema["properties"].pop("total_weight_kg", None)
         schema["required"] = list(schema["properties"])
         for field in schema["properties"].values():
             field.pop("default", None)
@@ -175,6 +178,44 @@ class DeepSeekProductExtractor:
             if part.get("type") == "output_text"
         )
         return AlertIntent.model_validate(json.loads(content))
+
+    def interpret_alert_rule(self, text: str) -> AlertRule:
+        schema = AlertRule.model_json_schema()
+        payload = {
+            "model": self.model,
+            "instructions": (
+                "Transforma únicamente lenguaje natural en una regla de alerta JSON. "
+                "No decidas si una oferta es buena, no inventes umbrales y usa null "
+                "para restricciones ausentes. Conserva unidades y monedas."
+            ),
+            "input": text,
+            "temperature": 0,
+            "reasoning": {"effort": "none"},
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "alert_rule",
+                    "schema": schema,
+                }
+            },
+        }
+        response = self.session.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        self._record_usage(body.get("usage") or {})
+        content = "".join(
+            part["text"]
+            for item in body["output"]
+            if item.get("type") == "message"
+            for part in item.get("content", [])
+            if part.get("type") == "output_text"
+        )
+        return AlertRule.model_validate(json.loads(content))
 
     def _parse_response(self, response, schema) -> ProductExtraction:
         body = response.json()
