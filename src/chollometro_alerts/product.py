@@ -18,6 +18,8 @@ class ProductExtraction(BaseModel):
     units: int | None = Field(default=None, ge=1)
     unit_volume_l: Decimal | None = Field(default=None, ge=0)
     total_volume_l: Decimal | None = Field(default=None, ge=0)
+    unit_weight_kg: Decimal | None = Field(default=None, ge=0)
+    total_weight_kg: Decimal | None = Field(default=None, ge=0)
     confidence: Decimal = Field(default=Decimal(0), ge=0, le=1)
     extraction_source: str = "deterministic"
 
@@ -34,6 +36,8 @@ def normalize_product_extraction(extraction: ProductExtraction) -> ProductExtrac
     data = extraction.model_dump()
     if data["units"] is not None and data["unit_volume_l"] is not None:
         data["total_volume_l"] = Decimal(data["units"]) * data["unit_volume_l"]
+    if data["units"] is not None and data["unit_weight_kg"] is not None:
+        data["total_weight_kg"] = Decimal(data["units"]) * data["unit_weight_kg"]
     return ProductExtraction.model_validate(data)
 
 
@@ -104,6 +108,8 @@ def extract_product(
         "units",
         "unit_volume_l",
         "total_volume_l",
+        "unit_weight_kg",
+        "total_weight_kg",
     ):
         if merged[field] is None and getattr(llm_result, field) is not None:
             merged[field] = getattr(llm_result, field)
