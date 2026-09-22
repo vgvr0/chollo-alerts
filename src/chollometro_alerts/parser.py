@@ -1,12 +1,40 @@
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from bs4 import BeautifulSoup
 
+from .errors import ChollometroParseError
 from .filters import category_for
 from .models import Deal
+
+# The item selector the parser understands, and the page shell that proves a
+# real Chollometro search page was served. A 200 response that has neither the
+# items nor the shell (captcha, error page, changed markup, empty body) is a
+# payload failure, never an empty result set.
+RESULT_ITEM_SELECTOR = 'article[id^="thread_"]'
+SEARCH_PAGE_SELECTORS = (RESULT_ITEM_SELECTOR, ".threadList", ".threadListContainer")
+
+# Explicit "no results" wording. Without one of these markers a page with no
+# items is treated as a failure: an empty scan must be proven, not assumed.
+EMPTY_RESULTS_MARKERS = (
+    "no hemos encontrado",
+    "no se han encontrado",
+    "no hay resultados",
+    "sin resultados",
+    "0 resultados",
+)
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    """One fetched search page: the parsed deals plus the validity evidence."""
+
+    deals: list[Deal]
+    items_found: int
+    empty_results: bool
 
 
 def _price(text):
@@ -47,7 +75,11 @@ def _published(text):
 
 
 def parse_search(html: str, query: str) -> list[Deal]:
-    soup = BeautifulSoup(html, "html.parser")
+    """Lenient parsing of a search page (pure, no validation of the payload)."""
+    return parse_search_soup(BeautifulSoup(html, "html.parser"), query)
+
+
+def parse_search_soup(soup, query: str) -> list[Deal]:
     deals = []
     for article in soup.select('article[id^="thread_"]'):
         aid = article.get("id", "").removeprefix("thread_")
@@ -128,3 +160,31 @@ def parse_search(html: str, query: str) -> list[Deal]:
             )
         )
     return deals
+
+
+def parse_search_page(html: str, query: str) -> SearchPage:
+    """Parse a search response, rejecting payloads that are not a search page.
+
+    Raises `ChollometroParseError` when the response cannot be recognised as a
+    Chollometro results page, so callers never mistake a broken response for a
+    search that legitimately returned nothing.
+    """
+    if not html or not html.strip():
+        raise ChollometroParseError("empty response body")
+    soup = BeautifulSoup(html, "html.parser")
+    items = len(soup.select(RESULT_ITEM_SELECTOR))
+    empty = _empty_results_page(soup)
+    if not items and not empty and not _is_search_page(soup):
+        raise ChollometroParseError(
+            "unexpected search payload: no result items and no recognized markup"
+        )
+    return SearchPage(parse_search_soup(soup, query), items, empty)
+
+
+def _is_search_page(soup) -> bool:
+    return any(soup.select(selector) for selector in SEARCH_PAGE_SELECTORS)
+
+
+def _empty_results_page(soup) -> bool:
+    text = soup.get_text(" ", strip=True).casefold()
+    return any(marker in text for marker in EMPTY_RESULTS_MARKERS)

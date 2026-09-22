@@ -1,6 +1,8 @@
 import logging
 import threading
 
+from .errors import SCAN_SUCCESS
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +34,12 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                 rules = service.repository.list_alert_rules(enabled_only=True)
                 logger.info("scan_started active_rules=%s", len(rules))
                 service.run_active_rules(pages=pages)
-                logger.info("scan_finished")
+                # A provider failure is recorded per scan and must never stop
+                # the loop: the next cycle simply tries again.
+                logger.info(
+                    "scan_finished status=%s",
+                    getattr(service, "last_scan_status", SCAN_SUCCESS),
+                )
             except Exception:
                 logger.exception("scan_failed")
             stop_event.wait(interval_minutes * 60)

@@ -61,6 +61,46 @@ The LLM is intentionally limited to **extracting structured facts from the deal*
 
 This separation keeps the decision pipeline deterministic, testable and easier to extend.
 
+## 🛡️ Chollometro failure handling
+
+**ESCANEO CORRECTO + 0 RESULTADOS ≠ FALLO DE CHOLLOMETRO.** An empty but
+complete search is `SUCCESS` with 0 deals; a search that could not be completed is
+`FAILED`. Both states are distinguished in the scanner, in `scan_runs.status`, in
+the logs, in the metrics (`SCAN_STATUS`, `SCAN_ERROR_TYPE`) and in the CLI
+(`SCAN_STATUS=FAILED` and exit code 1 for `check` / `baseline`).
+
+* **Timeout**: every request carries an explicit timeout
+  (`CHOLLOMETRO_TIMEOUT_SECONDS`, default 20 s), so nothing waits forever.
+* **Retries and backoff**: transient failures are retried up to
+  `CHOLLOMETRO_MAX_RETRIES` times (default 2) with exponential backoff starting at
+  `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` (0.5 s) and capped at
+  `CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS` (30 s). The budget is bounded: no
+  infinite loops, and the sleep is injectable so tests never wait.
+* **429**: transient, and a numeric `Retry-After` is honoured within the backoff
+  cap.
+* **5xx** (`500`, `502`, `503`, `504`, plus `408`): transient, retried within the
+  same budget.
+* **4xx** (`400`, `401`, `403`, `404`): permanent, never retried, the scan fails.
+* **Parse failures**: a 200 response that is not a recognisable Chollometro
+  results page (captcha, error page, changed markup, empty body) raises a
+  `ChollometroParseError`. An empty result set must say so in the page itself; it
+  is never assumed from a missing payload.
+* **Total failure**: no page was read, so nothing is evaluated, persisted,
+  matched or notified, the previous baseline is untouched and no LLM call is
+  spent. `scan_runs.error_type` records `TIMEOUT`, `NETWORK_ERROR`, `HTTP_503`,
+  `PARSE_ERROR`, ...
+* **Partial failure**: when page 1 answers and page 2 fails, the deals of page 1
+  are kept (observations are claimed per deal, so the missing pages are simply
+  discovered in a later cycle) but the scan is recorded as `PARTIAL`, never as a
+  complete success. A rule whose **baseline** is being taken is stricter: an
+  incomplete baseline fails closed (`INITIALIZING_FAILED`, rule disabled), because
+  a partial baseline would silently hide deals.
+* **Daemon recovery**: a provider failure is logged, recorded as `FAILED` and the
+  daemon waits for the next cycle instead of exiting. Retries inside one scan
+  produce at most one operational Telegram alert per logical failure (existing
+  60-minute cooldown per error type), so a `503` never becomes alert spam, and no
+  "0 chollos encontrados" message is ever sent for a failure.
+
 ## 🚀 Example
 
 You can define a search such as:
