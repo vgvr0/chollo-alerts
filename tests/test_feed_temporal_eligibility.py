@@ -17,6 +17,7 @@ from decimal import Decimal
 import test_graphql_discovery as discovery
 
 from chollometro_alerts.alert_rule import AlertConstraints
+from chollometro_alerts.evaluation import MatchEvidence
 from chollometro_alerts.models import Deal
 from chollometro_alerts.service import AlertService
 
@@ -135,7 +136,11 @@ def test_first_scan_notifies_matching_deal_published_after_alert(tmp_path):
     assert service.run_active_rules() == 1
 
     assert notifier.sent_ids == ["C"]
-    assert "Luz despertador GRUNDIG" in notifier.messages[0]
+    message = notifier.messages[0]
+    assert "🎯 Alerta:" in message
+    assert "✅ Cumple:" in message
+    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "🧠 Evaluación: deterministic" in message
 
 
 def test_first_scan_records_entire_feed_as_seen(tmp_path):
@@ -234,11 +239,11 @@ def test_a_deal_published_after_every_alert_is_eligible_for_all_of_them(tmp_path
     assert service.run_active_rules() == 2
 
     assert sorted(notifier.sent_ids) == ["deal", "deal"]
-    assert len(notifier.sent) == 2
+    assert {evidence.rule_id for evidence in notifier.evidences} == {1, 2}
 
 
-def test_end_to_end_first_scan_notifies_and_never_duplicates(tmp_path):
-    """Alert -> later deal -> first scan -> match -> no duplicate.
+def test_end_to_end_first_scan_notifies_with_evidence_and_never_duplicates(tmp_path):
+    """Alert -> later deal -> first scan -> match -> evidence -> no duplicate.
 
     The exact scenario of the requirement:
 
@@ -289,6 +294,22 @@ def test_end_to_end_first_scan_notifies_and_never_duplicates(tmp_path):
     )
     assert repository.seen_feed_thread_ids() == {"A", "B", "C", "D"}
     assert repository.pending_rule_notifications() == []
+
+    # The message still explains: the alert, the conditions and the method.
+    message = notifier.messages[0]
+    assert "🎯 Alerta:" in message
+    assert "✅ Cumple:" in message
+    assert "• Producto buscado: «despertador» (detectado: «despertador»)" in message
+    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "🧠 Evaluación: llm" in message
+    assert "🤖 Coincidencia semántica:" in message
+
+    # The delivered evidence is exactly the evidence persisted with the match.
+    evidence = notifier.evidences[0]
+    assert isinstance(evidence, MatchEvidence)
+    assert (evidence.rule_id, evidence.query) == (rule_id, "despertador")
+    stored = repository.rule_observation_evidence(rule_id, "C")
+    assert MatchEvidence.from_dict(stored) == evidence
 
     # Second and third cycles with the identical feed: nothing new at all.
     assert service.run_active_rules() == 0

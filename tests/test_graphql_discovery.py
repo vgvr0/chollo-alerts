@@ -106,7 +106,10 @@ class RecordingNotifier:
     @property
     def messages(self):
         """Exactly what Telegram would have received, in order."""
-        return [format_message(deal) for deal in self.sent]
+        return [
+            format_message(deal, evidence)
+            for deal, evidence in zip(self.sent, self.evidences, strict=True)
+        ]
 
 
 class CountingExtractor:

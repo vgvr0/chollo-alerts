@@ -52,7 +52,7 @@ class RecordingNotifier:
     def __init__(self):
         self.sent = []
 
-    def send(self, deal):
+    def send(self, deal, evidence=None):
         self.sent.append(deal)
 
 

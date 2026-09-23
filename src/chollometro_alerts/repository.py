@@ -82,9 +82,17 @@ class DealRepository:
             rule_id INTEGER NOT NULL, deal_id TEXT NOT NULL,
             first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
             baseline INTEGER NOT NULL DEFAULT 0, matched INTEGER,
-            rejection_reason TEXT, notified_at TEXT,
+            rejection_reason TEXT, notified_at TEXT, evidence TEXT,
             PRIMARY KEY (rule_id, deal_id)
         )""")
+        # Migrate databases created before the match evidence was stored: the
+        # durable evidence is what lets a retried notification explain the
+        # original match again, after the deal left the provider window.
+        observation_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(rule_deal_observations)")
+        }
+        if "evidence" not in observation_columns:
+            db.execute("ALTER TABLE rule_deal_observations ADD COLUMN evidence TEXT")
         # Migrate databases created before rule states existed.
         columns = {row[1] for row in db.execute("PRAGMA table_info(alert_rules)")}
         if "state" not in columns:
@@ -513,16 +521,31 @@ class DealRepository:
         return cur.rowcount == 1
 
     def record_rule_observation_result(
-        self, rule_id, deal_id, matched, rejection_reason=None
+        self, rule_id, deal_id, matched, rejection_reason=None, *, evidence=None
     ):
         # A row that carries a verdict is not a baseline snapshot any more, so
         # the flag is cleared here: baseline rows have no verdict by definition.
+        stored = json.dumps(evidence, default=str) if evidence is not None else None
         self.db.execute(
             "UPDATE rule_deal_observations SET matched=?,baseline=0,rejection_reason=? "
-            "WHERE rule_id=? AND deal_id=?",
-            (int(matched), rejection_reason, rule_id, deal_id),
+            ",evidence=? WHERE rule_id=? AND deal_id=?",
+            (int(matched), rejection_reason, stored, rule_id, deal_id),
         )
         self.db.commit()
+
+    def rule_observation_evidence(self, rule_id, deal_id):
+        """The evidence stored with the verdict of one (rule, deal) pair."""
+        row = self.db.execute(
+            "SELECT evidence FROM rule_deal_observations WHERE rule_id=? AND deal_id=?",
+            (rule_id, deal_id),
+        ).fetchone()
+        if row is None or not row[0]:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except ValueError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def mark_rule_observation_notified(self, rule_id, deal_id):
         self.db.execute(

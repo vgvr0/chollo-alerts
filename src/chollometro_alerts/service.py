@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from .alert_rule import AlertRule
 from .config import InterestRule
 from .errors import SCAN_FAILED, SCAN_PARTIAL, SCAN_SUCCESS, ChollometroError
-from .evaluation import DealEvaluator, interest_rule_from_alert
+from .evaluation import DealEvaluator, MatchEvidence, interest_rule_from_alert
 from .filters import InterestEngine
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
@@ -176,6 +176,9 @@ class AlertService:
             return [] if dry_run else 0
         sent = 0
         self.last_summary = RunSummary()
+        # The alert this scan evaluates: the notification names it, never the
+        # deal category.
+        alert_text = self._alert_text(rule_id, query)
         extractor = self.extractor if self.extractor is not None else create_extractor()
         initial_metrics = dict(getattr(extractor, "metrics", {}))
         try:
@@ -208,7 +211,11 @@ class AlertService:
                 # A crash after claiming but before Telegram acknowledgement is
                 # retried safely; successful observations remain idempotent.
                 if observation and observation[5] and observation[7] is None:
-                    self.notifier.send(deal)
+                    # The retry reuses the stored evidence of the original
+                    # match, so the message keeps explaining the same alert.
+                    self.notifier.send(
+                        deal, self._stored_evidence(rule_id, deal.deal_id)
+                    )
                     if not getattr(self.notifier, "dry_run", False):
                         self.repository.mark_rule_observation_notified(
                             rule_id, deal.deal_id
@@ -238,15 +245,20 @@ class AlertService:
             self.last_summary.interesting += 1
             if dry_run:
                 continue
+            # Evidence of what really produced the match: the alert, the method
+            # and every condition the engine checked.
+            evidence = evaluation.evidence(
+                rule_id=rule_id, alert_text=alert_text, query=query
+            )
             if rule_id is not None and hasattr(self.repository, "record_rule_match"):
                 self.repository.record_rule_match(deal.deal_id, rule_id)
                 self.repository.record_rule_observation_result(
-                    rule_id, deal.deal_id, True, None
+                    rule_id, deal.deal_id, True, None, evidence=evidence.as_dict()
                 )
             inserted = self.repository.upsert(deal)
             self.last_summary.new += int(bool(inserted))
             if rule_id is None and not self.repository.was_notified(deal.deal_id):
-                self.notifier.send(deal)
+                self.notifier.send(deal, evidence)
                 if not getattr(self.notifier, "dry_run", False):
                     self.repository.mark_notified(deal.deal_id)
                     self.last_summary.telegram_sent += 1
@@ -256,7 +268,7 @@ class AlertService:
                         self.repository.mark_rule_match_notified(deal.deal_id, rule_id)
                 sent += 1
             elif rule_id is not None:
-                self.notifier.send(deal)
+                self.notifier.send(deal, evidence)
                 if not getattr(self.notifier, "dry_run", False):
                     self.repository.mark_rule_observation_notified(
                         rule_id, deal.deal_id
@@ -519,7 +531,7 @@ class AlertService:
     def _process_feed_deal(self, deal, rules, extractor, initial_metrics):
         """Evaluate one new feed deal against every active rule."""
         sent = 0
-        for rule_id, alert_rule, rule, created_at in rules:
+        for rule_id, alert_rule, rule, created_at, alert_text in rules:
             if not published_after_alert(deal, created_at):
                 # The alert is younger than the deal: it must never announce it.
                 self.last_summary.before_alert += 1
@@ -549,7 +561,13 @@ class AlertService:
                 self.last_summary.rejected += 1
                 continue
             self.last_summary.interesting += 1
-            sent += self._deliver(rule_id, evaluation.deal)
+            sent += self._deliver(
+                rule_id,
+                evaluation.deal,
+                evaluation.evidence(
+                    rule_id=rule_id, alert_text=alert_text, query=alert_rule.query
+                ),
+            )
         return sent
 
     @staticmethod
@@ -571,21 +589,32 @@ class AlertService:
             return not published_after_alert(deal, created_at)
         return False
 
-    def _deliver(self, rule_id, deal):
+    def _deliver(self, rule_id, deal, evidence=None):
         """Persist the match, notify once and record the delivery.
 
         The match and the observation are written before Telegram, and
         `notified_at` only after it succeeded. A failure therefore leaves a
         durable pending state instead of a silently processed deal.
+
+        The evidence is stored next to the match, so the retry pass replays the
+        original explanation instead of a bare deal.
         """
+        if evidence is None:
+            # Retry pass: the alert, the method and the reasons come back from
+            # the durable observation written before the failed delivery.
+            evidence = self._stored_evidence(rule_id, deal.deal_id)
         self.repository.record_rule_match(deal.deal_id, rule_id)
         self.repository.record_rule_observation_result(
-            rule_id, deal.deal_id, True, None
+            rule_id,
+            deal.deal_id,
+            True,
+            None,
+            evidence=evidence.as_dict() if evidence is not None else None,
         )
         inserted = self.repository.upsert(deal)
         self.last_summary.new += int(bool(inserted))
         try:
-            self.notifier.send(deal)
+            self.notifier.send(deal, evidence)
         except Exception as exc:  # noqa: BLE001 - one delivery must not stop the cycle
             self.last_summary.errors += 1
             logger.warning(
@@ -607,7 +636,7 @@ class AlertService:
 
     def _deliver_pending_notifications(self, rules):
         """Retry deliveries left pending by an earlier failure in this database."""
-        enabled = {rule_id for rule_id, _rule, _interest, _created in rules}
+        enabled = {rule_id for rule_id, _rule, _interest, _created, _text in rules}
         sent = 0
         for rule_id, deal_id in self.repository.pending_rule_notifications(
             PENDING_NOTIFICATION_LIMIT
@@ -628,7 +657,7 @@ class AlertService:
         return sent
 
     def _active_rules_with_dates(self):
-        """Enabled rules with the creation date of each alert."""
+        """Enabled rules with the creation date and text that name their alerts."""
         rules = []
         for rule_id, alert_rule in self._active_alert_rules():
             rules.append(
@@ -637,9 +666,27 @@ class AlertService:
                     alert_rule,
                     self._interest_rule(alert_rule),
                     self.repository.alert_rule_created_at(rule_id),
+                    self._alert_text(rule_id, alert_rule.query),
                 )
             )
         return rules
+
+    def _alert_text(self, rule_id, query):
+        """The alert a notification must name: its stored text, else its query."""
+        if rule_id is None:
+            return query
+        getter = getattr(self.repository, "alert_rule_original_text", None)
+        if getter is None:
+            return query
+        return getter(rule_id) or query
+
+    def _stored_evidence(self, rule_id, deal_id):
+        """Evidence persisted with an earlier match, or None for older rows."""
+        loader = getattr(self.repository, "rule_observation_evidence", None)
+        if loader is None:
+            return None
+        payload = loader(rule_id, deal_id)
+        return MatchEvidence.from_dict(payload) if payload else None
 
     def _log_feed_window(self, batch, new, overlap=None, initialized=True):
         """Record the visibility window and warn only on a real loss signal.

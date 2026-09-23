@@ -116,6 +116,15 @@ def _deterministic(text: str) -> ProductExtraction:
     return normalize_product_extraction(result)
 
 
+def deterministic_product_facts(product_text: str) -> ProductExtraction:
+    """The facts the local parser derives on its own for one text.
+
+    Exposed so a caller can tell which facts of a hybrid extraction the model
+    had to supply, without re-implementing the deterministic parser.
+    """
+    return _deterministic(product_text)
+
+
 def extract_product(
     product_text: str,
     llm: Callable[[str], ProductExtraction | Mapping | str] | None = None,

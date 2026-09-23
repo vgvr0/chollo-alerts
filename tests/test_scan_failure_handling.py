@@ -56,7 +56,7 @@ class RecordingNotifier:
         self.sent = []
         self.alerts = []
 
-    def send(self, deal):
+    def send(self, deal, evidence=None):
         self.sent.append(deal)
 
     def send_system_alert(self, error_type, component, message, run_id):

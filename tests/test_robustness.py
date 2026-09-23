@@ -97,7 +97,7 @@ class Notifier:
         self.sent = []
         self.fail = fail
 
-    def send(self, d):
+    def send(self, d, evidence=None):
         if self.fail:
             raise RuntimeError
         self.sent.append(d)
