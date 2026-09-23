@@ -374,6 +374,7 @@ class TelegramRuleController:
                     f"{self.url}/getUpdates", params=params, timeout=poll_timeout + 10
                 )
                 response.raise_for_status()
+                self.repository.runtime_telegram_activity()
                 updates = response.json().get("result", [])
                 for update in updates:
                     update_id = update.get("update_id")
@@ -388,7 +389,8 @@ class TelegramRuleController:
                         )
                 backoff = 1
             except (requests.RequestException, ValueError):
-                logger.warning("telegram_poll_error retry_in_seconds=%s", backoff)
+                self.repository.runtime_telegram_failure()
+                logger.warning("telegram.poll.failed retry_in_seconds=%s", backoff)
                 if stop_event is not None:
                     stop_event.wait(backoff)
                 else:

@@ -28,22 +28,43 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
 
     listener = threading.Thread(target=listen, name="telegram-listener", daemon=True)
     listener.start()
+    repository = service.repository
+    repository.runtime_daemon_started()
+    logger.info("daemon.started interval_minutes=%s", interval_minutes)
     try:
         while not stop_event.is_set():
+            run_id = None
             try:
                 rules = service.repository.list_alert_rules(enabled_only=True)
-                logger.info("scan_started active_rules=%s", len(rules))
+                run_id = repository.runtime_scan_started()
+                service.runtime_run_id = run_id
+                logger.info(
+                    "scan.started run_id=%s active_rules=%s", run_id, len(rules)
+                )
+                logger.info(
+                    "scan_started run_id=%s active_rules=%s", run_id, len(rules)
+                )
                 service.run_active_rules(pages=pages)
                 # A provider failure is recorded per scan and must never stop
                 # the loop: the next cycle simply tries again.
-                logger.info(
-                    "scan_finished status=%s",
-                    getattr(service, "last_scan_status", SCAN_SUCCESS),
+                status = getattr(service, "last_scan_status", SCAN_SUCCESS)
+                repository.runtime_scan_finished(
+                    run_id, status, getattr(service, "last_scan_error_type", None)
                 )
-            except Exception:
-                logger.exception("scan_failed")
+                logger.info("scan.completed run_id=%s status=%s", run_id, status)
+                logger.info("scan_finished status=%s", status)
+            except Exception as exc:
+                if run_id is not None:
+                    repository.runtime_scan_finished(
+                        run_id, "FAILED", type(exc).__name__
+                    )
+                    logger.exception("scan.failed run_id=%s", run_id)
+                else:
+                    logger.exception("scan.failed")
+            repository.runtime_heartbeat()
             stop_event.wait(interval_minutes * 60)
     finally:
+        logger.info("daemon.stopping")
         stop_event.set()
         listener.join(timeout=2)
         service.repository.close_current_thread()
