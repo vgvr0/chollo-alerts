@@ -51,7 +51,10 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                 repository.runtime_scan_finished(
                     run_id, status, getattr(service, "last_scan_error_type", None)
                 )
-                logger.info("scan.completed run_id=%s status=%s", run_id, status)
+                if status == SCAN_SUCCESS:
+                    logger.info("scan.completed run_id=%s status=%s", run_id, status)
+                else:
+                    logger.warning("scan.failed run_id=%s status=%s", run_id, status)
                 logger.info("scan_finished status=%s", status)
             except Exception as exc:
                 if run_id is not None:
