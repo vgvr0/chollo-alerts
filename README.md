@@ -209,6 +209,20 @@ Compose monta `./data` en `/app/data` y configura `DATABASE_PATH` como
 del contenedor. También se puede cambiar `DATABASE_PATH` si se ejecuta la
 imagen directamente.
 
+El estado local se puede consultar sin red:
+
+```bash
+chollometro-alerts health
+docker compose ps
+```
+
+`HEALTHY` indica que la base es accesible y el daemon progresa; `DEGRADED`
+indica errores recientes con progreso todavía observable; `UNHEALTHY` indica
+que la base no está disponible o que el scanner lleva demasiado tiempo sin
+terminar. El umbral por defecto es `max(SCAN_INTERVAL_MINUTES * 3, 15)`
+minutos y admite `HEALTH_STALE_AFTER_MINUTES`; el arranque tiene una gracia de
+`max(SCAN_INTERVAL_MINUTES * 2, 5)` minutos.
+
 Create the configuration file from the example and fill in your secrets:
 
 ```bash
