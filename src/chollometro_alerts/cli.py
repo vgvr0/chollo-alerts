@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import signal
 import threading
 from time import perf_counter
 
@@ -207,7 +208,11 @@ def main():
     load_dotenv(PROJECT_ROOT / ".env")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser()
-    p.add_argument("--db", default="deals.sqlite3")
+    p.add_argument(
+        "--db",
+        default=os.getenv("DATABASE_PATH", "deals.sqlite3"),
+        help="Ruta de SQLite (por defecto DATABASE_PATH o deals.sqlite3)",
+    )
     p.add_argument("--pages", type=int, default=1)
     sub = p.add_subparsers(dest="command", required=False)
     baseline = sub.add_parser("baseline")
@@ -353,7 +358,16 @@ def main():
             service=service,
         )
         stop = threading.Event()
+        previous_handlers = {}
+
+        def request_shutdown(signum, _frame):
+            logger = logging.getLogger(__name__)
+            logger.info("shutdown_requested signal=%s", signal.Signals(signum).name)
+            stop.set()
+
         try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.signal(signum, request_shutdown)
             if a.command == "telegram-listen":
                 controller.listen_forever(stop_event=stop)
             else:
@@ -362,8 +376,10 @@ def main():
                 )
                 run_daemon(controller, service, interval, a.pages, stop)
         except KeyboardInterrupt:
-            stop.set()
-            logging.getLogger(__name__).info("shutdown_requested")
+            request_shutdown(signal.SIGINT, None)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
         return
     if a.command != "baseline" and not getattr(a, "dry_run", False):
         missing = [

@@ -192,6 +192,23 @@ source .venv/Scripts/activate      # Windows PowerShell: .venv\Scripts\Activate.
 pip install -e .
 ```
 
+### Docker
+
+La imagen ejecuta el daemon (`chollometro-alerts run`) como un usuario sin
+privilegios. Copia `.env.example` a `.env` y configura las credenciales en ese
+archivo o en el entorno del proceso; `.env` no se copia dentro de la imagen.
+
+```bash
+docker compose up -d
+docker compose logs -f
+docker compose down
+```
+
+Compose monta `./data` en `/app/data` y configura `DATABASE_PATH` como
+`/app/data/chollometro.sqlite3`, por lo que la SQLite sobrevive a la recreación
+del contenedor. También se puede cambiar `DATABASE_PATH` si se ejecuta la
+imagen directamente.
+
 Create the configuration file from the example and fill in your secrets:
 
 ```bash
