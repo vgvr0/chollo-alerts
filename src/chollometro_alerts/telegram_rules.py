@@ -14,6 +14,7 @@ from .intent_router import (
     updated_rule,
 )
 from .models import format_number
+from .telegram import post_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ class TelegramRuleController:
         repository,
         translator,
         timeout=20,
+        retries=2,
+        backoff=0.5,
+        sleep=time.sleep,
         service=None,
     ):
         self.url = f"https://api.telegram.org/bot{bot_token}"
@@ -104,6 +108,9 @@ class TelegramRuleController:
         self.repository = repository
         self.translator = translator
         self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self._sleep = sleep
         self.service = service
 
     def process_update(self, update):
@@ -118,23 +125,25 @@ class TelegramRuleController:
             return None
         text = message.get("text", "").strip()
         try:
-            reply = self._reply_to(text)
-        except ValueError as exc:
-            reply = f"Necesito una aclaración: {exc}"
-        except ChollometroError as exc:
-            # Never answer "alerta creada, 0 ofertas" when Chollometro failed:
-            # the rule stays inactive and no baseline was stored.
-            reply = (
-                f"⚠️ No he podido consultar Chollometro ahora mismo "
-                f"({exc.error_type}). La alerta no se ha activado y no se ha "
-                "guardado ninguna referencia. Vuelve a enviar el mensaje para "
-                "reintentarlo."
-            )
-            logger.warning(
-                "alert_baseline_failed error_type=%s",
-                exc.error_type,
-            )
-        self.send_message(reply)
+            try:
+                reply = self._reply_to(text)
+            except ValueError as exc:
+                reply = f"Necesito una aclaración: {exc}"
+            except ChollometroError as exc:
+                # Never answer "alerta creada, 0 ofertas" when Chollometro failed.
+                reply = (
+                    f"⚠️ No he podido consultar Chollometro ahora mismo "
+                    f"({exc.error_type}). La alerta no se ha activado y no se ha "
+                    "guardado ninguna referencia. Vuelve a enviar el mensaje para "
+                    "reintentarlo."
+                )
+                logger.warning("alert_baseline_failed error_type=%s", exc.error_type)
+            self.send_message(reply)
+        except Exception:
+            release = getattr(self.repository, "release_telegram_update", None)
+            if release is not None:
+                release(update_id)
+            raise
         return reply
 
     def _reply_to(self, text):
@@ -368,11 +377,11 @@ class TelegramRuleController:
                 updates = response.json().get("result", [])
                 for update in updates:
                     update_id = update.get("update_id")
-                    if update_id is not None:
-                        offset = max(offset or update_id, update_id + 1)
                     logger.info("telegram_update_received update_id=%s", update_id)
                     try:
                         self.process_update(update)
+                        if update_id is not None:
+                            offset = max(offset or update_id, update_id + 1)
                     except Exception:
                         logger.exception(
                             "telegram_update_failed update_id=%s", update_id
@@ -387,12 +396,14 @@ class TelegramRuleController:
                 backoff = min(max_backoff, backoff * 2)
 
     def send_message(self, text):
-        response = requests.post(
+        post_with_retry(
             f"{self.url}/sendMessage",
             json={"chat_id": self.authorized_chat_id, "text": text},
             timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+            sleep=self._sleep,
         )
-        response.raise_for_status()
 
     def _format(self, intent, rows, baseline_count=None):
         if intent.action == "list":
