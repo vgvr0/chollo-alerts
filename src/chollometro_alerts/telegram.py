@@ -1,17 +1,59 @@
+import time
+
 import requests
 
 from .evaluation import MatchEvidence
 from .models import Deal, format_amount
 
+TRANSIENT_TELEGRAM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _retry_after(response):
+    try:
+        value = float(response.headers.get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def post_with_retry(
+    url, *, json, timeout, retries=2, backoff=0.5, max_backoff=30, sleep=time.sleep
+):
+    """POST to Telegram with bounded retries for transient failures only."""
+    for attempt in range(retries + 1):
+        try:
+            response = requests.post(url, json=json, timeout=timeout)
+            status = getattr(response, "status_code", None)
+            if status not in TRANSIENT_TELEGRAM_STATUS:
+                response.raise_for_status()
+                return response
+            if attempt == retries:
+                response.raise_for_status()
+                return response
+            delay = _retry_after(response)
+            sleep(
+                min(delay if delay is not None else backoff * (2**attempt), max_backoff)
+            )
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == retries:
+                raise
+            sleep(min(backoff * (2**attempt), max_backoff))
+    raise AssertionError("telegram retry loop must return or raise")
+
 
 class TelegramNotifier:
-    def __init__(self, token, chat_id, timeout=20):
+    def __init__(
+        self, token, chat_id, timeout=20, retries=2, backoff=0.5, sleep=time.sleep
+    ):
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.chat_id = chat_id
         self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self._sleep = sleep
 
     def send(self, deal: Deal, evidence: MatchEvidence | None = None):
-        r = requests.post(
+        post_with_retry(
             self.url,
             json={
                 "chat_id": self.chat_id,
@@ -19,17 +61,18 @@ class TelegramNotifier:
                 "disable_web_page_preview": False,
             },
             timeout=self.timeout,
+            retries=self.retries,
+            backoff=self.backoff,
+            sleep=self._sleep,
         )
-        r.raise_for_status()
 
     def send_system_alert(self, error_type, component, message, run_id):
         from datetime import UTC, datetime
 
         text = f"🚨 CHOLLOMETRO ALERTS ERROR\n\nTipo: {error_type}\nComponente: {component}\nMensaje: {message}\nHora: {datetime.now(UTC).isoformat()}\nRun: {run_id}"
-        r = requests.post(
+        post_with_retry(
             self.url, json={"chat_id": self.chat_id, "text": text}, timeout=self.timeout
         )
-        r.raise_for_status()
 
 
 def _temperature(value) -> str:

@@ -705,6 +705,11 @@ class DealRepository:
         self.db.commit()
         return cur.rowcount == 1
 
+    def release_telegram_update(self, update_id):
+        """Allow a failed update to be delivered again on the next poll."""
+        self.db.execute("DELETE FROM telegram_updates WHERE update_id=?", (update_id,))
+        self.db.commit()
+
     def set_alert_context(self, chat_id, rule_ids):
         """Remember the alert(s) the bot showed or created last for one chat."""
         now = datetime.now(UTC).isoformat()
