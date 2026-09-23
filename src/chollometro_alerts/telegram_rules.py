@@ -5,7 +5,14 @@ import requests
 
 from .alert_text import merge_intent
 from .errors import ChollometroError
-from .intent import intent_to_rule, notification_window, validate_intent
+from .intent import AlertIntent, intent_to_rule, notification_window, validate_intent
+from .intent_router import (
+    alert_candidates,
+    classify_alert_operation,
+    read_alert_reference,
+    resolve_alert_reference,
+    updated_rule,
+)
 from .models import format_number
 
 logger = logging.getLogger(__name__)
@@ -111,41 +118,7 @@ class TelegramRuleController:
             return None
         text = message.get("text", "").strip()
         try:
-            # The merchant lists and the notification window are read from the
-            # sentence itself before anything is persisted: they must never be
-            # an invention of the model, and a vague period ("por la noche")
-            # asks for the exact hours instead of guessing them.
-            intent = validate_intent(
-                merge_intent(self.translator.interpret_alert(text), text)
-            )
-            rows = self.repository.apply_alert_intent(intent)
-            if intent.action in {"create", "update"}:
-                target = next(
-                    (
-                        row
-                        for row in rows
-                        if row[1]
-                        == (intent.query or intent.product_type or intent.brand)
-                    ),
-                    None,
-                )
-                if target:
-                    self.repository.attach_alert_rule(
-                        target[0], intent_to_rule(intent), text
-                    )
-            baseline_count = None
-            if intent.action == "create" and self.service is not None:
-                query = intent.query or intent.product_type or intent.brand
-                rule = next((r for r in rows if r[1] == query), None)
-                # A rule whose baseline could not be taken stays disabled, and
-                # retrying the same message must be allowed to complete it.
-                if rule is not None and self.repository.get_rule(rule[0])[7] in {
-                    "INITIALIZING",
-                    "INITIALIZING_FAILED",
-                }:
-                    baseline_count = self.service.baseline_rule(rule[0], query)
-                    rows = self.repository.list_alert_rules()
-            reply = self._format(intent, rows, baseline_count)
+            reply = self._reply_to(text)
         except ValueError as exc:
             reply = f"Necesito una aclaración: {exc}"
         except ChollometroError as exc:
@@ -163,6 +136,210 @@ class TelegramRuleController:
             )
         self.send_message(reply)
         return reply
+
+    def _reply_to(self, text):
+        """Answer one message: manage the stored alerts, or create a new one.
+
+        The operation is decided *before* anything is extracted. A deletion is
+        never sent to the extractor (it does not need a product, a brand or a
+        category: it needs the alert it refers to), and an update reuses the
+        stored alert instead of building a second one from the sentence.
+        """
+        operation = classify_alert_operation(text)
+        if operation == "LIST_ALERTS":
+            return self._handle_list_alerts()
+        if operation == "DELETE_ALERT":
+            return self._handle_delete_alert(text)
+        if operation == "UPDATE_ALERT":
+            return self._handle_update_alert(text)
+        # CREATE_ALERT, and anything this router does not recognize, keep the
+        # original path: the sentence is interpreted and merged as before.
+        return self._handle_create_or_unknown(text)
+
+    def _handle_create_or_unknown(self, text):
+        """The creation path, unchanged: interpret the sentence, then store it."""
+        # The merchant lists and the notification window are read from the
+        # sentence itself before anything is persisted: they must never be
+        # an invention of the model, and a vague period ("por la noche")
+        # asks for the exact hours instead of guessing them.
+        intent = merge_intent(self.translator.interpret_alert(text), text)
+        if intent.action == "delete":
+            # The provider recognized a deletion this router did not: which
+            # alert disappears is still decided by the sentence, never by the
+            # product a deletion does not have to mention.
+            return self._handle_delete_alert(text)
+        if intent.action == "update" and not (
+            intent.query or intent.product_type or intent.brand
+        ):
+            # An update that names no alert can only be about a stored one.
+            return self._handle_update_alert(text)
+        intent = validate_intent(intent)
+        rows = self.repository.apply_alert_intent(intent)
+        if intent.action in {"create", "update"}:
+            target = next(
+                (
+                    row
+                    for row in rows
+                    if row[1] == (intent.query or intent.product_type or intent.brand)
+                ),
+                None,
+            )
+            if target:
+                self.repository.attach_alert_rule(
+                    target[0], intent_to_rule(intent), text
+                )
+                # From now on, "esa alerta" means the one just created.
+                self._remember_alerts([target[0]])
+        baseline_count = None
+        if intent.action == "create" and self.service is not None:
+            query = intent.query or intent.product_type or intent.brand
+            rule = next((r for r in rows if r[1] == query), None)
+            # A rule whose baseline could not be taken stays disabled, and
+            # retrying the same message must be allowed to complete it.
+            if rule is not None and self.repository.get_rule(rule[0])[7] in {
+                "INITIALIZING",
+                "INITIALIZING_FAILED",
+            }:
+                baseline_count = self.service.baseline_rule(rule[0], query)
+                rows = self.repository.list_alert_rules()
+        if intent.action == "list":
+            self._remember_alerts([row[0] for row in rows])
+        elif intent.action == "delete":
+            self._clear_remembered()
+        return self._format(intent, rows, baseline_count)
+
+    def _handle_list_alerts(self):
+        """Show every stored alert and remember them as the last ones shown."""
+        rows = self.repository.list_alert_rules() if self.repository is not None else []
+        self._remember_alerts([row[0] for row in rows])
+        return self._format(AlertIntent(action="list"), rows)
+
+    def _handle_delete_alert(self, text):
+        """Delete the alert the sentence refers to, without extracting anything."""
+        reference = read_alert_reference(text, "DELETE_ALERT")
+        resolution = self._resolve(reference)
+        if resolution.status == "unique":
+            candidate = resolution.match
+            self.repository.delete_alert_rule(candidate.rule_id)
+            self._clear_remembered()
+            return f"🗑️ Alerta eliminada: {self._alert_label(candidate)}"
+        if resolution.status == "ambiguous":
+            self._remember_alerts([item.rule_id for item in resolution.matches])
+            return self._ambiguous_reply("eliminar", resolution.matches)
+        return self._missing_alert_reply(resolution.status)
+
+    def _handle_update_alert(self, text):
+        """Change only the properties the sentence asks for, on the stored alert."""
+        reference = read_alert_reference(text, "UPDATE_ALERT")
+        if not reference.has_change:
+            return (
+                "🤔 Dime qué quieres cambiar de esa alerta, por ejemplo "
+                "«cambia 200 a 150 €» o «quita el límite de 200 €»."
+            )
+        resolution = self._resolve(reference)
+        if resolution.status == "unique":
+            candidate = resolution.match
+            rule = updated_rule(candidate.rule, reference, legacy=candidate.legacy)
+            try:
+                self.repository.replace_alert_rule(candidate.rule_id, rule, text)
+            except ValueError as exc:
+                return f"⚠️ No he podido actualizarla: {exc}."
+            self._remember_alerts([candidate.rule_id])
+            return self._format(self._intent_from_rule(rule, "update"), [])
+        if resolution.status == "ambiguous":
+            self._remember_alerts([item.rule_id for item in resolution.matches])
+            return self._ambiguous_reply("actualizar", resolution.matches)
+        return self._missing_alert_reply(resolution.status)
+
+    def _resolve(self, reference):
+        return resolve_alert_reference(
+            reference, self._alert_candidates(), self._remembered()
+        )
+
+    def _alert_candidates(self):
+        return alert_candidates(self.repository) if self.repository is not None else ()
+
+    @staticmethod
+    def _alert_label(candidate):
+        return (
+            f"#{candidate.rule_id} — {candidate.rule.query} — "
+            f"{rule_price_text(candidate.rule)}"
+        )
+
+    @staticmethod
+    def _ambiguous_reply(verb, candidates):
+        listed = "\n".join(
+            f"#{item.rule_id} — {item.rule.query} — {rule_price_text(item.rule)}"
+            for item in candidates
+        )
+        example = f"«Elimina la alerta #{candidates[0].rule_id}»"
+        return (
+            f"🔎 He encontrado varias alertas que podrían ser esa. "
+            f"¿Cuál quieres {verb}?\n\n{listed}\n\n"
+            f"Respóndeme con su número (por ejemplo {example}) o con más detalle."
+        )
+
+    @staticmethod
+    def _missing_alert_reply(status):
+        if status == "context_required":
+            return (
+                "🤔 No sé a qué alerta te refieres. Dime su número (#1) o "
+                "descríbela; con «qué alertas tengo» te las enseño."
+            )
+        return (
+            "🤔 No he encontrado ninguna alerta que coincida con esa "
+            "descripción. Con «qué alertas tengo» te enseño las que tienes."
+        )
+
+    @staticmethod
+    def _intent_from_rule(rule, action):
+        """The intent of a stored alert, so its reply reads like a creation one."""
+        constraints = rule.constraints
+        fields = {
+            "action": action,
+            "query": rule.query,
+            "product_type": rule.product,
+            "brand": rule.brand,
+            "include_merchants": list(rule.include_merchants) or None,
+            "exclude_merchants": list(rule.exclude_merchants) or None,
+        }
+        for unit, name in (
+            ("absolute", "max_price"),
+            ("unit", "max_price_per_unit"),
+            ("liter", "max_price_per_liter"),
+        ):
+            value = getattr(constraints, name, None)
+            if value is not None:
+                fields["max_price"] = value
+                fields["price_unit"] = unit
+                break
+        window = rule.notification_window
+        if window is not None:
+            fields["notify_window_start"] = f"{window.start:%H:%M}"
+            fields["notify_window_end"] = f"{window.end:%H:%M}"
+            fields["notify_timezone"] = window.timezone
+        # Every other condition the intent model knows about is carried over,
+        # so the reply describes what the update really left stored.
+        for name in ("temperature_min", "temperature_max"):
+            if name in AlertIntent.model_fields:
+                fields[name] = getattr(constraints, name, None)
+        return AlertIntent(**fields)
+
+    def _remember_alerts(self, rule_ids):
+        """Remember the alert(s) the bot just created, changed or showed."""
+        if self.repository is None:
+            return
+        self.repository.set_alert_context(self.authorized_chat_id, rule_ids)
+
+    def _remembered(self):
+        if self.repository is None:
+            return ()
+        return self.repository.get_alert_context(self.authorized_chat_id)
+
+    def _clear_remembered(self):
+        if self.repository is None:
+            return
+        self.repository.clear_alert_context(self.authorized_chat_id)
 
     def poll_once(self, offset=None):
         params = {"timeout": 0}

@@ -619,6 +619,45 @@ repository.apply_alert_intent(intent)
 repository.attach_alert_rule(2, intent_to_rule(intent), "texto original")
 ```
 
+### Managing the stored alerts
+
+Not every message creates an alert. Asking for the stored ones, deleting one or
+changing one is decided **before** anything is extracted
+(`intent_router.classify_alert_operation`): `CREATE_ALERT`, `DELETE_ALERT`,
+`UPDATE_ALERT`, `LIST_ALERTS` or `UNKNOWN`, and only the last two of those —
+`CREATE_ALERT` and what the router does not recognize — keep the original
+interpretation path.
+
+```text
+Avísame de portátiles Lenovo por menos de 700€   → CREATE_ALERT  (el extractor)
+Qué alertas tengo                                → LIST_ALERTS   (lista las guardadas)
+Elimina la alerta de Lenovo                      → DELETE_ALERT  (sin producto)
+Quita esa alerta                                 → DELETE_ALERT  (la última mostrada)
+Cambia 200 por 150€                              → UPDATE_ALERT  (la misma alerta)
+Quita el límite de 200€ de la alerta de cascos   → UPDATE_ALERT  (solo el límite)
+```
+
+A deletion does not need a product, a brand or a category: it needs the alert it
+refers to. The reference is read from the sentence itself and compared with the
+stored alerts, structured facts first (`max_price`, shop, product, brand, the
+words of the query) and the normalized text last, so `200€`, `200 euros`,
+`menos de 200` and `por debajo de 200` are the same condition, and `borra`,
+`elimina`, `quita`, `borra lo de`, `ya no quiero` and `deja de avisarme` are the
+same operation. `Quita esa alerta` uses the last alert the bot showed or
+created, which is remembered per chat; without it the bot asks which one.
+
+| Candidates the sentence matches | What the bot does |
+| --- | --- |
+| exactly one | deletes (or updates) it |
+| several plausible | shows them and asks which one, deleting nothing |
+| none | answers that no stored alert matches, and how to list them |
+
+An update rewrites **that same row**: it keeps its id, its creation time and its
+matches, and it changes only the properties the sentence asked for (the price
+limit, the shops, the schedule), so `Cambia 200 por 150€` on "Cascos Sony por
+menos de 200€" leaves one alert, not two. Changing the product of an alert is
+not an update: that is a deletion plus a creation.
+
 ## 🧪 Testing an alert against historical deals
 
 `alert test` replays a persisted rule against the deals already stored locally, so
