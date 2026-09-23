@@ -17,6 +17,9 @@ dependencies = [
     "tzdata>=2024.1",
 ]
 
+[project.optional-dependencies]
+dev = ["types-requests>=2.31"]
+
 [project.scripts]
 chollometro-alerts = "chollometro_alerts.cli:main"
 

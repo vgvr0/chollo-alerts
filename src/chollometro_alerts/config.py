@@ -266,16 +266,16 @@ def _interest_rule_init_with_legacy_aliases(self, *args, **kwargs):
     _interest_rule_init(self, *args, **kwargs)
 
 
-InterestRule.__init__ = _interest_rule_init_with_legacy_aliases
+InterestRule.__init__ = _interest_rule_init_with_legacy_aliases  # type: ignore[method-assign]
 
 
-@property
+@property  # type: ignore[misc]
 def _temperature_min_alias(self):
     """`rule.min_temperature`, the original read name of the floor."""
     return self.temperature_min
 
 
-InterestRule.min_temperature = _temperature_min_alias
+InterestRule.min_temperature = _temperature_min_alias  # type: ignore[attr-defined]
 
 
 def _decimal(name):

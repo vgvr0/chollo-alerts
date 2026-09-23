@@ -475,7 +475,7 @@ def merge_intent(intent, text: str):
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
     temperature = extract_temperature_mentions(text)
-    updates = {}
+    updates: dict[str, object] = {}
     if mentions.allowed:
         updates["include_merchants"] = list(mentions.allowed)
     if mentions.excluded:
@@ -499,7 +499,7 @@ def merge_rule(rule, text: str):
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
     temperature = extract_temperature_mentions(text)
-    updates = {}
+    updates: dict[str, object] = {}
     if mentions.allowed:
         updates["include_merchants"] = tuple(mentions.allowed)
     if mentions.excluded:

@@ -48,7 +48,7 @@ def format_amount(value: Decimal | int | None) -> str:
     return f"{rounded:.2f}".replace(".", ",") + " €"
 
 
-def format_number(value: Decimal | int | None) -> str:
+def format_number(value: Decimal | float | None) -> str:
     """Plain Spanish number for quantities and volumes: `1.98` -> `1,98`."""
     if value is None:
         return "N/D"

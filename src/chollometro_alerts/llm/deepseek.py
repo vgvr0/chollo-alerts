@@ -145,6 +145,8 @@ class DeepSeekProductExtractor:
             )
             return result
 
+        raise AssertionError("DeepSeek retry loop must return or raise")
+
     def interpret_alert(self, text: str) -> AlertIntent:
         schema = AlertIntent.model_json_schema()
         payload = {
