@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality (Python 3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install project and development tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" pytest ruff mypy
+
+      - name: Report CI environment
+        run: |
+          python --version
+          python -m pip --version
+          ruff --version
+          mypy --version
+          pwd
+          git status --short
+          git ls-files '*.py'
+
+      - name: Run Ruff check
+        run: ruff check . --output-format=full
+
+      - name: Check Ruff formatting
+        run: ruff format --check .
+
+      - name: Run mypy
+        run: mypy .
+
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - '3.11'
+          - '3.12'
+          - '3.13'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install project and development tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" pytest
+
+      - name: Run tests
+        run: python -m pytest -q
