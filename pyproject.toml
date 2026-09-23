@@ -6,7 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "chollometro-alerts"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["requests>=2.31", "beautifulsoup4>=4.12", "pydantic>=2.0", "python-dotenv>=1.0"]
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    # `zoneinfo` reads the IANA database from the system; Windows does not ship
+    # it, and the notification windows are defined in a real timezone
+    # (`Europe/Madrid` by default), so the data is a declared dependency.
+    "tzdata>=2024.1",
+]
 
 [project.scripts]
 chollometro-alerts = "chollometro_alerts.cli:main"

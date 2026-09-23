@@ -1,6 +1,12 @@
 from dataclasses import dataclass
 
 from .config import InterestRule
+from .merchants import (
+    MERCHANT_EXCLUDED,
+    MERCHANT_NOT_ALLOWED,
+    MerchantVerdict,
+    merchant_verdict,
+)
 from .models import Deal, format_amount, format_number
 from .product import product_type_matches
 
@@ -76,10 +82,36 @@ class InterestEngine:
         return apply_rule(deal, rule)
 
 
+def merchant_decision(
+    merchant: str | None, rule: InterestRule
+) -> tuple[MerchantVerdict, tuple[ConditionCheck, ...]]:
+    """The deterministic merchant verdict and the evidence behind it.
+
+    Shared by `apply_rule` and by the pre-LLM gate of the evaluation pipeline,
+    so the merchant filter is decided exactly once, in one place, and never by
+    the model. The checks are only produced for lists the rule really carries:
+    a rule without merchants claims nothing.
+    """
+    verdict = merchant_verdict(merchant, rule.include_merchants, rule.exclude_merchants)
+    checks: list[ConditionCheck] = []
+    if rule.exclude_merchants and verdict.reason != MERCHANT_EXCLUDED:
+        checks.append(
+            ConditionCheck(
+                "MERCHANT_EXCLUDED",
+                "Sin tiendas excluidas",
+                ", ".join(rule.exclude_merchants),
+            )
+        )
+    if rule.include_merchants and verdict.reason != MERCHANT_NOT_ALLOWED:
+        checks.append(
+            ConditionCheck("MERCHANT_INCLUDED", "Tienda permitida", merchant or "N/D")
+        )
+    return verdict, tuple(checks)
+
+
 def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
     """Decide one deal and keep the evidence of everything it really checked."""
     text = deal.title.casefold()
-    merchant = (deal.merchant or "").casefold()
     extraction = deal.product_extraction
     checks: list[ConditionCheck] = []
 
@@ -217,22 +249,8 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
                 f"{deal.temperature}° ≥ {rule.min_temperature}°",
             )
         )
-    if rule.exclude_merchants:
-        if any(m in merchant for m in rule.exclude_merchants):
-            return verdict(False, "REJECTED_MERCHANT")
-        checks.append(
-            ConditionCheck(
-                "MERCHANT_EXCLUDED",
-                "Sin tiendas excluidas",
-                ", ".join(rule.exclude_merchants),
-            )
-        )
-    if rule.include_merchants:
-        if not any(m in merchant for m in rule.include_merchants):
-            return verdict(False, "REJECTED_MERCHANT")
-        checks.append(
-            ConditionCheck(
-                "MERCHANT_INCLUDED", "Tienda permitida", deal.merchant or "N/D"
-            )
-        )
+    merchant_result, merchant_checks = merchant_decision(deal.merchant, rule)
+    if not merchant_result.accepted:
+        return verdict(False, merchant_result.reason)
+    checks.extend(merchant_checks)
     return verdict(True, "ACCEPTED")

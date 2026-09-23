@@ -3,6 +3,7 @@
 from typing import Protocol
 
 from ..alert_rule import AlertRule
+from ..alert_text import merge_rule
 
 
 class AlertRuleParser(Protocol):
@@ -18,4 +19,6 @@ class DeepSeekAlertRuleParser:
     def parse(self, text: str) -> AlertRule:
         if not text or not text.strip():
             raise ValueError("La alerta no puede estar vacía")
-        return self.client.interpret_alert_rule(text)
+        # The shops and the notification window of the sentence are read
+        # deterministically and merged into the provider's answer.
+        return merge_rule(self.client.interpret_alert_rule(text), text)

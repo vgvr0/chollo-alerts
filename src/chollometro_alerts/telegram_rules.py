@@ -3,8 +3,9 @@ import time
 
 import requests
 
+from .alert_text import merge_intent
 from .errors import ChollometroError
-from .intent import intent_to_rule, validate_intent
+from .intent import intent_to_rule, notification_window, validate_intent
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,30 @@ PRICE_UNIT_LABELS = {"liter": "L", "unit": "ud", "kilogram": "kg"}
 def price_suffix(price_unit):
     label = PRICE_UNIT_LABELS.get(price_unit or "absolute")
     return f"€/{label}" if label else "€"
+
+
+def alert_detail_lines(intent) -> list[str]:
+    """The shops and the schedule a created alert really stores.
+
+    Both are shown back to the operator so the confirmation says what the alert
+    will do, and the schedule line states explicitly that a deal found outside
+    it is not lost.
+    """
+    lines = []
+    if intent.include_merchants or intent.exclude_merchants:
+        shops = ", ".join(intent.include_merchants or ("cualquier tienda",))
+        if intent.exclude_merchants:
+            shops += f" (excepto {', '.join(intent.exclude_merchants)})"
+        lines.append(f"🏪 Tiendas: {shops}")
+    window = notification_window(intent)
+    if window is not None:
+        stamp = f"{window.start:%H:%M}–{window.end:%H:%M} {window.timezone}"
+        lines.append(
+            f"⏱️ Avisos: {stamp}. Los chollos que aparezcan fuera "
+            "de ese horario no se pierden: quedan pendientes y se envían al "
+            "abrirse la ventana."
+        )
+    return lines
 
 
 class TelegramRuleController:
@@ -48,7 +73,13 @@ class TelegramRuleController:
             return None
         text = message.get("text", "").strip()
         try:
-            intent = validate_intent(self.translator.interpret_alert(text))
+            # The merchant lists and the notification window are read from the
+            # sentence itself before anything is persisted: they must never be
+            # an invention of the model, and a vague period ("por la noche")
+            # asks for the exact hours instead of guessing them.
+            intent = validate_intent(
+                merge_intent(self.translator.interpret_alert(text), text)
+            )
             rows = self.repository.apply_alert_intent(intent)
             if intent.action in {"create", "update"}:
                 target = next(
@@ -178,6 +209,9 @@ class TelegramRuleController:
                 f"✅ {verb}: {subject} por debajo de "
                 f"{amount} {price_suffix(intent.price_unit)}"
             )
+            details = alert_detail_lines(intent)
+            if details:
+                reply += "\n" + "\n".join(details)
             if baseline_count is not None and intent.action == "create":
                 reply += f"\n🔎 {baseline_count} ofertas actuales guardadas como referencia.\nTe avisaré de las nuevas que cumplan la condición."
             return reply

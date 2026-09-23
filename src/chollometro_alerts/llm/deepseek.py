@@ -155,7 +155,21 @@ class DeepSeekProductExtractor:
                 "nunca la frase completa, el precio ni la moneda. El precio es "
                 "el precio total de la oferta (price_unit 'absolute') salvo "
                 "que el mensaje diga explícitamente 'por unidad', 'por litro' "
-                "o 'por kilo'. No inventes precios ni datos faltantes."
+                "o 'por kilo'. "
+                "Tiendas: en 'include_merchants' van las tiendas permitidas "
+                "('de Amazon o PcComponentes', 'solo Amazon', 'Amazon y "
+                "PcComponentes') y en 'exclude_merchants' las excluidas ('no "
+                "AliExpress', 'excepto AliExpress', 'excluir AliExpress'), con "
+                "los nombres tal y como aparecen; null si no se mencionan. "
+                "Horario: en 'notify_window_start' y 'notify_window_end' van "
+                "las horas locales en formato HH:MM cuando el mensaje da horas "
+                "concretas ('solo entre las 08:00 y las 23:00', 'avísame de "
+                "8:00 a 23:00', '22:00-07:00'), y 'notify_timezone' si nombra "
+                "una zona. El horario solo decide cuándo se avisa, no si el "
+                "chollo cuenta. Si el mensaje dice un periodo vago ('por la "
+                "noche', 'de madrugada') sin horas concretas, deja los tres "
+                "campos del horario en null: no inventes límites. "
+                "No inventes precios ni datos faltantes."
             ),
             "input": text,
             "temperature": 0,
@@ -193,7 +207,13 @@ class DeepSeekProductExtractor:
             "instructions": (
                 "Transforma únicamente lenguaje natural en una regla de alerta JSON. "
                 "No decidas si una oferta es buena, no inventes umbrales y usa null "
-                "para restricciones ausentes. Conserva unidades y monedas."
+                "para restricciones ausentes. Conserva unidades y monedas. "
+                "Rellena include_merchants con las tiendas permitidas y "
+                "exclude_merchants con las excluidas, con los nombres tal y "
+                "como los escribió el usuario. Rellena notification_window "
+                "solo si el mensaje da horas concretas (HH:MM) y una timezone "
+                "IANA; si solo dice un periodo vago como 'por la noche', "
+                "deja notification_window en null."
             ),
             "input": text,
             "temperature": 0,

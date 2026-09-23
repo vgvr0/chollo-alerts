@@ -10,7 +10,12 @@ from .evaluation import DealEvaluator, MatchEvidence, interest_rule_from_alert
 from .filters import InterestEngine
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
-from .repository import as_utc
+from .repository import (
+    PENDING_NOTIFICATION_SCHEDULE,
+    PENDING_TELEGRAM_FAILURE,
+    as_utc,
+)
+from .schedule import window_from_alert_rule
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,10 @@ class RunSummary:
     llm_cache_hits: int = 0
     llm_failures: int = 0
     llm_tokens: int = 0
+    # Matches kept pending by an alert's notification window, and pending
+    # deliveries that are still outside their window. Neither is an error.
+    deferred: int = 0
+    pending_waiting: int = 0
 
     def format_metrics(self) -> str:
         fields = (
@@ -126,11 +135,15 @@ class AlertService:
         notifier,
         extractor: ProductExtractor | None = None,
         feed=None,
+        clock=None,
     ):
         self.client = client
         self.repository = repository
         self.notifier = notifier
         self.extractor = extractor
+        # Injectable clock: the notification windows are evaluated against it,
+        # so tests never depend on when the suite runs.
+        self._clock = clock or (lambda: datetime.now(UTC))
         # Optional GraphQL discovery feed. Without it the service keeps the
         # original per-query HTML scans (which are also its HTML fallback).
         self.feed = feed
@@ -179,6 +192,9 @@ class AlertService:
         # The alert this scan evaluates: the notification names it, never the
         # deal category.
         alert_text = self._alert_text(rule_id, query)
+        # The alert's notification window is read once per scan: it only gates
+        # the Telegram delivery, never the match.
+        window = self._rule_window(rule_id)
         extractor = self.extractor if self.extractor is not None else create_extractor()
         initial_metrics = dict(getattr(extractor, "metrics", {}))
         try:
@@ -213,14 +229,12 @@ class AlertService:
                 if observation and observation[5] and observation[7] is None:
                     # The retry reuses the stored evidence of the original
                     # match, so the message keeps explaining the same alert.
-                    self.notifier.send(
-                        deal, self._stored_evidence(rule_id, deal.deal_id)
+                    self._notify_or_defer(
+                        rule_id,
+                        deal,
+                        self._stored_evidence(rule_id, deal.deal_id),
+                        window,
                     )
-                    if not getattr(self.notifier, "dry_run", False):
-                        self.repository.mark_rule_observation_notified(
-                            rule_id, deal.deal_id
-                        )
-                        self.last_summary.telegram_sent += 1
                 continue
             # Canonical evaluation: identity, facts, pricing and interest rule.
             evaluation = self.evaluator.evaluate(
@@ -268,13 +282,7 @@ class AlertService:
                         self.repository.mark_rule_match_notified(deal.deal_id, rule_id)
                 sent += 1
             elif rule_id is not None:
-                self.notifier.send(deal, evidence)
-                if not getattr(self.notifier, "dry_run", False):
-                    self.repository.mark_rule_observation_notified(
-                        rule_id, deal.deal_id
-                    )
-                    self.last_summary.telegram_sent += 1
-                sent += 1
+                sent += int(self._notify_or_defer(rule_id, deal, evidence, window))
         return results if dry_run else sent
 
     def _provider_failure(self, rule_id, query, error, dry_run):
@@ -387,13 +395,24 @@ class AlertService:
 
     def _run_rule_cycles(self, pages=1):
         """Scan only enabled persisted rules; comparisons remain deterministic."""
-        total = 0
+        # The HTML path never compares publishing dates (that is the feed's
+        # window), so it does not need the creation timestamps.
+        rules = [
+            (rule_id, alert_rule, self._interest_rule(alert_rule))
+            for rule_id, alert_rule in self._active_alert_rules()
+        ]
+        self.last_summary = RunSummary()
+        # The HTML path keeps the same delivery guarantee as the feed: a match
+        # whose Telegram delivery failed, or whose notification window was
+        # closed, is delivered here even when the deal has already left the
+        # scanned page.
+        total = self._deliver_pending_notifications(rules)
         statuses = []
-        for rule_id, alert_rule in self._active_alert_rules():
+        for rule_id, alert_rule, rule in rules:
             total += self.run_rule(
                 rule_id=rule_id,
                 query=alert_rule.query,
-                rule=self._interest_rule(alert_rule),
+                rule=rule,
                 pages=pages,
             )
             statuses.append(self.last_scan_status)
@@ -493,9 +512,9 @@ class AlertService:
         only initializes the seen state and is never announced for that alert.
         It is **not** a blind snapshot, though: a deal published *after* an
         alert was created goes through the normal pipeline in this very first
-        cycle (temporal gate -> interest filters -> extraction -> persistence ->
-        Telegram). Without that, every chollo published between the alert and
-        the first daemon cycle would be lost.
+        cycle (temporal gate -> merchant/interest filters -> extraction ->
+        evidence -> persistence -> Telegram). Without that, every chollo
+        published between the alert and the first daemon cycle would be lost.
 
         Each thread is registered as seen only after the outcome of every rule
         is durable, exactly like the steady-state cycle, so a crash mid-cycle
@@ -561,12 +580,14 @@ class AlertService:
                 self.last_summary.rejected += 1
                 continue
             self.last_summary.interesting += 1
+            window = window_from_alert_rule(alert_rule)
             sent += self._deliver(
                 rule_id,
                 evaluation.deal,
                 evaluation.evidence(
                     rule_id=rule_id, alert_text=alert_text, query=alert_rule.query
                 ),
+                window=window,
             )
         return sent
 
@@ -589,7 +610,59 @@ class AlertService:
             return not published_after_alert(deal, created_at)
         return False
 
-    def _deliver(self, rule_id, deal, evidence=None):
+    def _rule_window(self, rule_id):
+        """The notification window of one persisted alert, or None.
+
+        An alert without a window — every legacy row, and every alert created
+        before the windows existed — keeps notifying immediately.
+        """
+        if rule_id is None:
+            return None
+        loader = getattr(self.repository, "load_alert_rule", None)
+        if loader is None:
+            return None
+        try:
+            alert_rule = loader(rule_id)
+        except Exception:  # noqa: BLE001 - an unreadable window is not fatal
+            logger.warning("notification_window_unreadable rule_id=%s", rule_id)
+            return None
+        return window_from_alert_rule(alert_rule)
+
+    def _defer(self, rule_id, deal_id, window):
+        """True when the alert's window keeps this delivery for later."""
+        if window is None or rule_id is None:
+            return False
+        if window.allows(self._clock()):
+            return False
+        self.repository.mark_rule_observation_pending(
+            rule_id, deal_id, PENDING_NOTIFICATION_SCHEDULE
+        )
+        self.last_summary.deferred += 1
+        logger.info(
+            "notification_deferred rule_id=%s deal=%s window=%s reason=%s",
+            rule_id,
+            deal_id,
+            window.describe(),
+            PENDING_NOTIFICATION_SCHEDULE,
+        )
+        return True
+
+    def _notify_or_defer(self, rule_id, deal, evidence, window):
+        """Send the message now, or leave the durable match pending.
+
+        Returns True only when Telegram really received it. A match outside the
+        alert's window is neither an error nor a loss: it stays pending until a
+        cycle runs inside the window.
+        """
+        if self._defer(rule_id, deal.deal_id, window):
+            return False
+        self.notifier.send(deal, evidence)
+        if not getattr(self.notifier, "dry_run", False):
+            self.repository.mark_rule_observation_notified(rule_id, deal.deal_id)
+            self.last_summary.telegram_sent += 1
+        return True
+
+    def _deliver(self, rule_id, deal, evidence=None, window=None):
         """Persist the match, notify once and record the delivery.
 
         The match and the observation are written before Telegram, and
@@ -598,6 +671,10 @@ class AlertService:
 
         The evidence is stored next to the match, so the retry pass replays the
         original explanation instead of a bare deal.
+
+        The notification window is checked here, after the match is durable: a
+        match outside the window is persisted as pending, not dropped, and the
+        next cycle inside the window delivers it.
         """
         if evidence is None:
             # Retry pass: the alert, the method and the reasons come back from
@@ -613,9 +690,14 @@ class AlertService:
         )
         inserted = self.repository.upsert(deal)
         self.last_summary.new += int(bool(inserted))
+        if self._defer(rule_id, deal.deal_id, window):
+            return 0
         try:
             self.notifier.send(deal, evidence)
         except Exception as exc:  # noqa: BLE001 - one delivery must not stop the cycle
+            self.repository.mark_rule_observation_pending(
+                rule_id, deal.deal_id, PENDING_TELEGRAM_FAILURE
+            )
             self.last_summary.errors += 1
             logger.warning(
                 "telegram_send_failed deal=%s rule_id=%s error=%s",
@@ -635,13 +717,32 @@ class AlertService:
         return 1
 
     def _deliver_pending_notifications(self, rules):
-        """Retry deliveries left pending by an earlier failure in this database."""
-        enabled = {rule_id for rule_id, _rule, _interest, _created, _text in rules}
+        """Deliver the pairs a Telegram failure or a window left pending.
+
+        Both kinds are retried from the durable match, and the alert's own
+        notification window applies to the retry just like it does to a fresh
+        match: a pair that is still outside its window stays pending (with the
+        reason it already had) and is picked up by a later cycle.
+        """
+        # The callers pass their own rule tuples (the feed adds the creation
+        # date and the alert text); only the first two fields matter here.
+        enabled = {entry[0] for entry in rules}
+        windows = {entry[0]: window_from_alert_rule(entry[1]) for entry in rules}
         sent = 0
         for rule_id, deal_id in self.repository.pending_rule_notifications(
             PENDING_NOTIFICATION_LIMIT
         ):
             if rule_id not in enabled:
+                continue
+            window = windows.get(rule_id)
+            if window is not None and not window.allows(self._clock()):
+                self.last_summary.pending_waiting += 1
+                logger.info(
+                    "pending_notification_waiting rule_id=%s deal=%s window=%s",
+                    rule_id,
+                    deal_id,
+                    window.describe(),
+                )
                 continue
             deal = self.repository.get_deal(deal_id)
             if deal is None:
@@ -653,7 +754,7 @@ class AlertService:
                     deal_id,
                 )
                 continue
-            sent += self._deliver(rule_id, deal)
+            sent += self._deliver(rule_id, deal, window=window)
         return sent
 
     def _active_rules_with_dates(self):
