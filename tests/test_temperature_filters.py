@@ -529,7 +529,7 @@ def test_the_telegram_message_explains_the_temperature_condition(tmp_path):
 
     message = notifier.messages[0]
     assert "✅ Cumple:" in message
-    assert "• Precio máximo: 649 € ≤ 700 €" in message
+    assert "• Precio máximo: 649 € < 700 €" in message
     assert "• Temperatura mínima: 425° ≥ 300°" in message
     assert "🔥 Temperatura: 425°" in message
 

@@ -7,7 +7,7 @@ from .alert_rule import AlertRule
 from .config import InterestRule, error_alert_cooldown_minutes
 from .errors import SCAN_FAILED, SCAN_PARTIAL, SCAN_SUCCESS, ChollometroError
 from .evaluation import DealEvaluator, MatchEvidence, interest_rule_from_alert
-from .filters import InterestEngine
+from .filters import InterestEngine, category_for
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
 from .repository import (
@@ -177,12 +177,17 @@ class AlertService:
         # Static/check mode is kept for compatibility; the daemon never enters
         # this path and always supplies a persisted rule id via run_active_rules.
         rules = rules or {query: InterestRule(query) for query in queries}
-        return sum(
-            self.run_rule(
-                None, query, rules.get(query) or next(iter(rules.values())), pages
-            )
-            for query in queries
-        )
+
+        def run_query(query):
+            # Legacy callers may key rules by the provider category, but a
+            # missing query must never silently select the first rule.
+            rule = rules.get(query) or rules.get(category_for(query))
+            if rule is None:
+                logger.warning("no_rule_for_query query=%s", query)
+                return 0
+            return self.run_rule(None, query, rule, pages)
+
+        return sum(run_query(query) for query in queries)
 
     def run_rule(self, rule_id, query, rule, pages=1, dry_run=False):
         self.last_summary = RunSummary()

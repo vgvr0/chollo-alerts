@@ -163,7 +163,7 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
             ConditionCheck(
                 "MAX_PRICE_PER_LITER",
                 "Precio por litro",
-                f"{format_amount(deal.price_per_liter)}/L ≤ "
+                f"{format_amount(deal.price_per_liter)}/L < "
                 f"{format_amount(rule.max_price_per_liter)}/L",
             )
         )
@@ -179,7 +179,7 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
             ConditionCheck(
                 "MAX_PRICE_PER_KILOGRAM",
                 "Precio por kilo",
-                f"{format_amount(price_per_kilogram)}/kg ≤ "
+                f"{format_amount(price_per_kilogram)}/kg < "
                 f"{format_amount(rule.max_price_per_kilogram)}/kg",
             )
         )
@@ -222,21 +222,22 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
             ConditionCheck(
                 "MAX_PRICE_PER_UNIT",
                 "Precio por unidad",
-                f"{format_amount(deal.price_per_unit)}/ud ≤ "
+                f"{format_amount(deal.price_per_unit)}/ud < "
                 f"{format_amount(rule.max_price_per_unit)}/ud",
             )
         )
-    # A deal without a price cannot prove this condition: the rule keeps its
-    # existing semantics (no rejection) and the notification stays silent about
-    # the price instead of claiming a comparison that never happened.
-    if rule.max_price is not None and deal.price is not None:
+    # An unknown required value is never a match.  In particular, a deal with
+    # no price cannot satisfy an absolute price ceiling by accident.
+    if rule.max_price is not None:
+        if deal.price is None:
+            return verdict(False, "REJECTED_UNKNOWN_PRICE")
         if deal.price >= rule.max_price:
             return verdict(False, "REJECTED_PRICE")
         checks.append(
             ConditionCheck(
                 "MAX_PRICE",
                 "Precio máximo",
-                f"{format_amount(deal.price)} ≤ {format_amount(rule.max_price)}",
+                f"{format_amount(deal.price)} < {format_amount(rule.max_price)}",
             )
         )
     # The temperature window is one more AND condition, checked after the price
