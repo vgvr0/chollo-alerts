@@ -127,7 +127,7 @@ def deterministic_product_facts(product_text: str) -> ProductExtraction:
 
 def extract_product(
     product_text: str,
-    llm: Callable[[str], ProductExtraction | Mapping | str] | None = None,
+    llm: Callable[..., ProductExtraction | Mapping | str] | None = None,
     deal_id: str | None = None,
 ) -> ProductExtraction:
     """Extract product facts deterministically, completing missing facts via LLM.

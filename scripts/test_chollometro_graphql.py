@@ -386,8 +386,8 @@ def print_comparison() -> None:
 
 def identity_report(deals: list[dict[str, Any]]) -> dict[str, Any]:
     ids = [str(deal.get("threadId")) for deal in deals if deal.get("threadId")]
-    stamps = [
-        deal.get("publishedAt")
+    stamps: list[float] = [
+        float(deal["publishedAt"])
         for deal in deals
         if isinstance(deal.get("publishedAt"), (int, float))
     ]

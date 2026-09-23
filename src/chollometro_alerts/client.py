@@ -151,7 +151,7 @@ class ChollometroClient:
         return list(collected.values())
 
     def _fetch_page(self, query: str, page: int):
-        params = {"q": query}
+        params: dict[str, str | int] = {"q": query}
         if page > 1:
             params["page"] = page
         url = f"{self.base_url}/search?{urlencode(params)}"
@@ -223,7 +223,7 @@ class ChollometroClient:
                 if status == RATE_LIMIT_STATUS
                 else ChollometroHTTPError
             )
-            error = error_class(
+            error: ChollometroError = error_class(
                 f"Chollometro HTTP {status} query={query} page={page}",
                 status_code=status,
                 response=response,
