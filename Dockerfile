@@ -20,5 +20,4 @@ USER appuser
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
     CMD ["chollometro-alerts", "health"]
 
-ENTRYPOINT ["chollometro-alerts"]
-CMD ["run"]
+CMD ["chollometro-alerts", "run"]
