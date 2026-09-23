@@ -139,7 +139,7 @@ def test_first_scan_notifies_matching_deal_published_after_alert(tmp_path):
     message = notifier.messages[0]
     assert "🎯 Alerta:" in message
     assert "✅ Cumple:" in message
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "• Precio máximo: 7,95 € < 15 €" in message
     assert "🧠 Evaluación: deterministic" in message
 
 
@@ -300,7 +300,7 @@ def test_end_to_end_first_scan_notifies_with_evidence_and_never_duplicates(tmp_p
     assert "🎯 Alerta:" in message
     assert "✅ Cumple:" in message
     assert "• Producto buscado: «despertador» (detectado: «despertador»)" in message
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "• Precio máximo: 7,95 € < 15 €" in message
     assert "🧠 Evaluación: llm" in message
     assert "🤖 Coincidencia semántica:" in message
 

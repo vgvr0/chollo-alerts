@@ -147,7 +147,7 @@ def test_a_deterministic_match_names_the_alert_and_the_conditions_it_checked():
         "\n"
         "✅ Cumple:\n"
         "• Producto buscado: «despertador» (detectado: «despertador»)\n"
-        "• Precio máximo: 7,95 € ≤ 15 €\n"
+        "• Precio máximo: 7,95 € < 15 €\n"
         "\n"
         "🧠 Evaluación: deterministic\n"
         "\n"
@@ -195,7 +195,7 @@ def test_the_production_scan_sends_that_same_explanation(tmp_path):
     assert [check.code for check in evidence.checks] == ["PRODUCT", "MAX_PRICE"]
     assert '"Despertadores por menos de 15 €"' in message
     assert "• Producto buscado: «despertador» (detectado: «despertador»)" in message
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "• Precio máximo: 7,95 € < 15 €" in message
     assert "🧠 Evaluación: deterministic" in message
     assert "generic" not in message
 
@@ -215,7 +215,7 @@ def test_a_price_only_match_shows_only_the_condition_it_evaluated(tmp_path):
     assert service.run_active_rules() == 1
 
     message = notifier.messages[0]
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in message
+    assert "• Precio máximo: 7,95 € < 15 €" in message
     assert "Producto buscado" not in message
     assert "Marca" not in message
     assert [check.code for check in notifier.evidences[0].checks] == ["MAX_PRICE"]
@@ -284,7 +284,7 @@ def test_a_hybrid_match_mixes_deterministic_checks_and_model_facts(tmp_path):
     message = notifier.messages[0]
     assert "🧠 Evaluación: hybrid" in message
     assert "• Marca: «Pascual» (detectada: «Pascual»)" in message
-    assert "• Precio por litro: 0,99 €/L ≤ 1,10 €/L" in message
+    assert "• Precio por litro: 0,99 €/L < 1,10 €/L" in message
     assert "🤖 Coincidencia semántica:" in message
     assert "Hechos aportados por el modelo: marca «Pascual»." in message
 
@@ -382,10 +382,10 @@ def test_two_alerts_for_one_deal_keep_independent_reasons(tmp_path):
     }
     assert set(by_rule) == {cheap, cheaper}
     assert by_rule[cheap][0].alert_text == "Despertadores por menos de 15 €"
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in by_rule[cheap][1]
+    assert "• Precio máximo: 7,95 € < 15 €" in by_rule[cheap][1]
     assert '"Despertadores por menos de 15 €"' in by_rule[cheap][1]
     assert by_rule[cheaper][0].alert_text == "Despertadores por menos de 8 €"
-    assert "• Precio máximo: 7,95 € ≤ 8 €" in by_rule[cheaper][1]
+    assert "• Precio máximo: 7,95 € < 8 €" in by_rule[cheaper][1]
     assert '"Despertadores por menos de 8 €"' in by_rule[cheaper][1]
     assert "≤ 15 €" not in by_rule[cheaper][1]
     assert len({sent.deal_id for sent in notifier.sent}) == 1
@@ -394,7 +394,7 @@ def test_two_alerts_for_one_deal_keep_independent_reasons(tmp_path):
 def test_a_condition_that_was_never_evaluated_is_never_claimed(tmp_path):
     deal = despertador(price=None)
     service, repository, notifier = make_service(tmp_path, [deal])
-    store_rule(
+    rule_id = store_rule(
         repository,
         query="despertador",
         product="despertador",
@@ -409,14 +409,11 @@ def test_a_condition_that_was_never_evaluated_is_never_claimed(tmp_path):
         ),
     )
 
-    assert service.run_active_rules() == 1
+    assert service.run_active_rules() == 0
 
-    message = notifier.messages[0]
-    assert "💰 Precio: N/D" in message
-    # The rule's price ceiling was not compared with anything, so it is silent.
-    assert "Precio máximo" not in message
-    assert "≤ 15 €" not in message
-    assert [check.code for check in notifier.evidences[0].checks] == ["PRODUCT"]
+    assert notifier.messages == []
+    observation = repository.get_rule_observation(rule_id, deal.deal_id)
+    assert observation[6] == "REJECTED_UNKNOWN_PRICE"
 
 
 def test_an_unknown_fact_rejects_instead_of_being_reported_as_met(tmp_path):
@@ -484,7 +481,7 @@ def test_a_retried_notification_keeps_the_original_explanation(tmp_path):
     assert notifier.evidences[0] == MatchEvidence.from_dict(stored)
     assert notifier.messages[0] == format_message(deal, notifier.evidences[0])
     assert '"despertador"' in notifier.messages[0]
-    assert "• Precio máximo: 7,95 € ≤ 15 €" in notifier.messages[0]
+    assert "• Precio máximo: 7,95 € < 15 €" in notifier.messages[0]
     assert (
         "Hechos aportados por el modelo: producto «despertador»."
         in (notifier.messages[0])

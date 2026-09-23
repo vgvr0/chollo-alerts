@@ -237,7 +237,9 @@ class DealEvaluator:
                     priced,
                     extraction,
                     rule,
-                    FilterResult(False, verdict.reason, merchant_checks),
+                    FilterResult(
+                        False, verdict.reason or "REJECTED_MERCHANT", merchant_checks
+                    ),
                     known,
                     False,
                 )
