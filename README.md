@@ -181,6 +181,62 @@ start-up). The names and defaults below are the ones the code really uses
 > the 60-minute default, and an unusable one (`0`, a negative number, a text)
 > fails fast with a `ConfigurationError` instead of silently ignoring it.
 
+## Deployment
+
+The supported managed deployment is a single Render **Background Worker** built
+from this repository's `Dockerfile`. It runs `chollometro-alerts run` as its
+main process and uses a 1 GB Render Persistent Disk mounted at `/data`.
+
+SQLite is deliberately single-instance: `numInstances: 1` is required, and
+multiple replicas or workers sharing this database are not supported. Render
+stops the old worker before replacing it when a disk is attached, avoiding two
+versions writing the same SQLite file during a deploy. The disk is persistent
+across restarts, redeploys and container replacement; the container root
+filesystem is not.
+
+The durable database path is:
+
+```text
+DATABASE_PATH=/data/chollometro.sqlite3
+```
+
+Set the three credentials in Render's Environment settings as secrets, without
+putting values in `render.yaml` or Git:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+DEEPSEEK_API_KEY
+```
+
+`DEEPSEEK_API_KEY` is only required when `LLM_ENABLED=true`. Non-secret runtime
+settings are declared in `render.yaml`; the names actually supported by this
+project are `SCAN_INTERVAL_MINUTES`, `ALERT_TIMEZONE`,
+`ERROR_ALERT_COOLDOWN_MINUTES`, `DEEPSEEK_MODEL`, and `DATABASE_PATH`.
+There are no `TIMEZONE`, `HEALTH_STALE_AFTER_MINUTES`, or
+`HEALTH_STARTUP_GRACE_MINUTES` settings in the current application.
+
+Create the Render service from the repository Blueprint, review the secret
+fields, and deploy. No public port is needed. The image's Docker healthcheck
+executes `chollometro-alerts health`, which verifies SQLite integrity and
+write access; the worker's liveness is the managed worker process itself.
+Locally, the equivalent is:
+
+```bash
+docker compose up --build
+docker compose run --rm chollometro-alerts chollometro-alerts health
+```
+
+Use Render logs to inspect `daemon.started`, `scan.started`,
+`scan.completed`/`scan.failed`, and `daemon.stopping`. A crash is restarted by
+the worker service. Test a controlled restart from Render, then run `health`
+and confirm alert rules and scan state remain present on the disk. A redeploy
+of the same commit should preserve the same data volume.
+
+To update the version, deploy a new commit from the repository and verify the
+service logs and health state after the replacement. Production auto-deploy is
+not part of CI in this repository; `render.yaml` only describes the service.
+
 ## ▶️ Running the project
 
 Install it once, in a virtual environment of your choice (the package is a plain
