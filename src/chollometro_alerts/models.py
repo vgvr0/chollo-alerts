@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 
 @dataclass(frozen=True)
@@ -30,3 +30,27 @@ class Deal:
     # the HTML parser leaves them unset and no rule consumes them yet.
     status: str | None = None
     is_expired: bool | None = None
+
+
+def format_amount(value: Decimal | int | None) -> str:
+    """Spanish money rendering of a price the deal or a rule really carries.
+
+    Whole amounts stay whole (`15` -> `15 €`) and a fractional one is shown with
+    the comma separator and at most two decimals (`7.95` -> `7,95 €`), so the
+    notification can quote the exact number that was compared.
+    """
+    if value is None:
+        return "N/D"
+    value = value if isinstance(value, Decimal) else Decimal(value)
+    if value == value.to_integral_value():
+        return f"{format(value.normalize(), 'f')} €"
+    rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{rounded:.2f}".replace(".", ",") + " €"
+
+
+def format_number(value: Decimal | int | None) -> str:
+    """Plain Spanish number for quantities and volumes: `1.98` -> `1,98`."""
+    if value is None:
+        return "N/D"
+    value = value if isinstance(value, Decimal) else Decimal(value)
+    return format(value.normalize(), "f").replace(".", ",")

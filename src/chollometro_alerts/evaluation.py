@@ -10,10 +10,36 @@ from dataclasses import dataclass
 
 from .alert_rule import AlertRule
 from .config import InterestRule
-from .filters import FilterResult, InterestEngine
-from .models import Deal
+from .filters import (
+    ConditionCheck,
+    FilterResult,
+    InterestEngine,
+)
+from .models import Deal, format_number
 from .pricing import PricingEngine
-from .product import ProductExtraction, extract_product, normalize_product_extraction
+from .product import (
+    ProductExtraction,
+    deterministic_product_facts,
+    extract_product,
+    normalize_product_extraction,
+)
+
+# Provenance of the facts that produced a verdict. It is the `extraction_source`
+# every evaluation already carries (and the cycle metrics already count); the
+# notification only exposes it.
+MATCH_METHODS = ("deterministic", "llm", "hybrid")
+
+# Checks whose facts the model can supply when the local parser cannot derive
+# them. Used to name the model's real contribution to an accepted match.
+MODEL_FACT_CHECKS = frozenset(
+    {
+        "MIN_QUANTITY",
+        "MIN_VOLUME",
+        "MAX_PRICE_PER_LITER",
+        "MAX_PRICE_PER_UNIT",
+        "MAX_PRICE_PER_KILOGRAM",
+    }
+)
 
 
 def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
@@ -33,6 +59,56 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
 
 
 @dataclass(frozen=True)
+class MatchEvidence:
+    """What a notification must show about one accepted match.
+
+    The evidence travels with the match: the alert that produced it, the method
+    that produced it and every condition that was really evaluated. `checks` is
+    built by the engine, never by the notifier, so nothing can be claimed
+    without having been compared first.
+    """
+
+    rule_id: int | None
+    alert_text: str
+    query: str
+    method: str
+    checks: tuple[ConditionCheck, ...] = ()
+    semantic_reason: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "rule_id": self.rule_id,
+            "alert_text": self.alert_text,
+            "query": self.query,
+            "method": self.method,
+            "checks": [check.as_dict() for check in self.checks],
+            "semantic_reason": self.semantic_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, payload) -> "MatchEvidence | None":
+        """Rebuild persisted evidence; a malformed payload is ignored."""
+        if not isinstance(payload, dict):
+            return None
+        checks = tuple(
+            check
+            for check in (
+                ConditionCheck.from_dict(item) for item in payload.get("checks") or ()
+            )
+            if check is not None
+        )
+        method = payload.get("method")
+        return cls(
+            rule_id=payload.get("rule_id"),
+            alert_text=str(payload.get("alert_text") or ""),
+            query=str(payload.get("query") or ""),
+            method=method if method in MATCH_METHODS else "deterministic",
+            checks=checks,
+            semantic_reason=payload.get("semantic_reason") or None,
+        )
+
+
+@dataclass(frozen=True)
 class DealEvaluation:
     """The deterministic verdict for one deal, before any side effect."""
 
@@ -42,6 +118,75 @@ class DealEvaluation:
     result: FilterResult
     known: bool
     from_cache: bool
+
+    @property
+    def method(self) -> str:
+        """How the facts that produced this verdict were obtained."""
+        source = getattr(self.extraction, "extraction_source", "deterministic")
+        return source if source in MATCH_METHODS else "deterministic"
+
+    def evidence(self, *, rule_id=None, alert_text=None, query=None) -> MatchEvidence:
+        """Render-ready evidence of this evaluation, scoped to one alert."""
+        return build_evidence(self, rule_id=rule_id, alert_text=alert_text, query=query)
+
+
+def build_evidence(
+    evaluation: DealEvaluation, *, rule_id=None, alert_text=None, query=None
+) -> MatchEvidence:
+    """Package an accepted evaluation as alert-scoped, render-ready evidence.
+
+    The alert is the one being evaluated (`alert_text`/`query`), never
+    `deal.category`: the same deal matching two alerts produces two independent
+    pieces of evidence, each naming its own alert.
+    """
+    text = (query or "").strip()
+    return MatchEvidence(
+        rule_id=rule_id,
+        alert_text=(alert_text or text).strip(),
+        query=text,
+        method=evaluation.method,
+        checks=evaluation.result.checks,
+        semantic_reason=semantic_reason(evaluation),
+    )
+
+
+def semantic_reason(evaluation: DealEvaluation) -> str | None:
+    """The model's real contribution to an accepted match, or None.
+
+    No prompt, chain of thought or internal token is ever exposed: the facts
+    listed here are the values the successful checks compared and they are
+    listed only when the local deterministic parser could not produce them, so
+    they can only have come from the model. A fact the checks did not use is
+    never mentioned.
+    """
+    if evaluation.method == "deterministic":
+        return None
+    used = {check.code for check in evaluation.result.checks}
+    extraction = evaluation.extraction
+    local = deterministic_product_facts(
+        evaluation.deal.product_text or evaluation.deal.title
+    )
+    facts = []
+    if (
+        "PRODUCT" in used
+        and extraction.product_type
+        and (local.product_type or "").casefold() != extraction.product_type.casefold()
+    ):
+        facts.append(f"producto «{extraction.product_type}»")
+    # The local parser never infers a brand: a brand check that passed proves
+    # the model supplied that fact.
+    if "BRAND" in used and extraction.brand and not local.brand:
+        facts.append(f"marca «{extraction.brand}»")
+    if MODEL_FACT_CHECKS & used:
+        if extraction.units is not None and local.units is None:
+            facts.append(f"unidades: {format_number(extraction.units)}")
+        if extraction.unit_volume_l is not None and local.unit_volume_l is None:
+            facts.append(
+                f"volumen por unidad: {format_number(extraction.unit_volume_l)} L"
+            )
+    if not facts:
+        return None
+    return "Hechos aportados por el modelo: " + ", ".join(facts) + "."
 
 
 class DealEvaluator:

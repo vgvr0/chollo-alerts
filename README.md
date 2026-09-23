@@ -19,6 +19,7 @@ It combines deterministic extraction with optional **LLM-powered analysis using 
 * 💰 Deterministic **price-per-unit analysis**
 * 🎯 Rule-based filtering before sending notifications
 * 📲 **Telegram notifications** for matching new deals
+* 🧾 **Explainable notifications**: each alert names the deal, the alert that matched, the conditions that held and the evaluation method
 * 💾 Persistent extraction cache to avoid unnecessary LLM calls
 * 🔁 Safe retry behaviour for failed notifications
 * 📊 Runtime metrics for LLM usage, cache hits and detected deals
@@ -41,7 +42,7 @@ flowchart TD
     H -- "yes" --> I["Deterministic rules<br/>pricing + interest engine"]
     I --> P["LLM (DeepSeek)<br/>only when the facts are not local"]
     P --> K["Match persisted<br/>rule_deal_observations + deal_rule_matches"]
-    K --> N["Telegram"]
+    K --> N["Telegram<br/>with the match explanation"]
     N --> O["notified_at after a successful delivery"]
 ```
 
@@ -226,7 +227,7 @@ Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
 | `alert_rules` | The persisted alerts: `query`, `product_type`, `brand`, `max_price`, `price_unit`, `enabled`, `state`, `created_at`, `updated_at`. |
 | `feed_threads` | **One row per thread ever seen in the GraphQL feed** (`thread_id` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
 | `feed_state` | Key/value state of the feed: `bootstrap_at` (the database saw its first discovery cycle) and `newest_published_at` (the watermark of the previous cycle). |
-| `rule_deal_observations` | One row per (`rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason and `notified_at`. |
+| `rule_deal_observations` | One row per (`rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason, `notified_at` and the stored match evidence. |
 | `deal_rule_matches` | The accepted (`deal_id`, `rule_id`) pairs and when they were matched and notified. |
 | `product_extractions` | The extraction cache (one JSON payload per deal) that avoids repeated LLM calls. |
 | `scan_runs` | One row per cycle and per HTML scan: counters, timings, HTTP status, `status` and `error_type`. The discovery cycle is recorded as `query='graphql:feed'`. |
@@ -307,15 +308,29 @@ Second cycle, same feed       0 evaluations, 0 notifications
 6. **Temporal filter** — `published_at > alert.created_at`; otherwise the pair is skipped without being evaluated or notified.
 7. **Deterministic evaluation** — `PricingEngine` and `InterestEngine` decide on prices, quantities, volumes, brands and thresholds.
 8. **LLM only when it corresponds** — DeepSeek is asked only when the local parser cannot produce the facts the rule needs (`LLM_ENABLED=false` keeps the pipeline fully deterministic).
-9. **Persist the match** — `deal_rule_matches` plus the `rule_deal_observations` verdict, written *before* Telegram.
+9. **Persist the match** — `deal_rule_matches` plus the `rule_deal_observations` verdict and evidence, written *before* Telegram.
 10. **Telegram** — exactly one message per accepted (deal, rule) pair.
 11. **`notified_at`** — written only after the delivery succeeded.
 
 **If Telegram fails** the match stays durable and the pair is left pending
 (matched, not notified). The next cycle retries it before anything else, from
-the stored deal, even if the deal has already left the provider window. A retry
-can never send a second message for an already-notified pair, and a Telegram
-outage can never mark a deal as processed without having notified it.
+the stored deal and the stored evidence, even if the deal has already left the
+provider window. A retry can never send a second message for an already-notified
+pair, and a Telegram outage can never mark a deal as processed without having
+notified it.
+
+## 🧾 Explainable notifications
+
+Each message is built from `MatchEvidence`, which the evaluation engine derives from the values it really compared — never from the deal's category:
+
+* the deal: title, price, merchant, temperature and URL;
+* the alert that produced the match (its stored text, or its query);
+* the conditions that held, one per line (`✅ Cumple:`);
+* the semantic contribution when the model supplied facts the local parser could not (`🤖 Coincidencia semántica`) — facts only, never prompts or internal reasoning;
+* the evaluation method: `deterministic`, `llm` or `hybrid` (`🧠 Evaluación`).
+
+The evidence is stored next to the match, so a retried delivery explains the original match again instead of sending a bare deal.
+
 
 ## 🔁 Deterministic rule evaluation
 
@@ -513,8 +528,9 @@ deliberately not hardcoded here.
 ## 📌 Project status
 
 * **GraphQL discovery is implemented and covered by the test suite** (feed
-  client, discovery cycle, window metrics and fallback): it is the default way
-  of finding new deals, not a future experiment.
+  client, discovery cycle, window metrics, fallback and explainable
+  notifications): it is the default way of finding new deals, not a future
+  experiment.
 * **HTML is kept, not replaced**: it is the controlled fallback when the
   GraphQL API fails and the complete behaviour when
   `CHOLLOMETRO_GRAPHQL_DISCOVERY=false`.
