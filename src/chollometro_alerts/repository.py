@@ -37,6 +37,24 @@ def as_utc(value):
     return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
 
 
+def legacy_price_columns(rule: AlertRule) -> tuple[str, str]:
+    """The `max_price` / `price_unit` columns that mirror a structured rule.
+
+    The exact inverse of `rule_from_row`'s legacy fallback, so a row rewritten
+    from a structured rule reads back as the same rule when it is old enough to
+    have no structured rule at all.
+    """
+    constraints = rule.constraints
+    for value, unit in (
+        (constraints.max_price, "absolute"),
+        (constraints.max_price_per_unit, "unit"),
+        (constraints.max_price_per_liter, "liter"),
+    ):
+        if value is not None:
+            return str(value), unit
+    return "0", "absolute"
+
+
 class DealRepository:
     def __init__(self, path="deals.sqlite3"):
         self.path = str(path)
@@ -79,6 +97,14 @@ class DealRepository:
         )
         db.execute(
             "CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, processed_at TEXT NOT NULL)"
+        )
+        # What the bot showed or created last, per chat: it is what resolves a
+        # later "quita esa alerta" when the sentence points instead of naming.
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS alert_context (
+            chat_id TEXT PRIMARY KEY, rule_ids TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+            )"""
         )
         db.execute("""CREATE TABLE IF NOT EXISTS deal_rule_matches (
             deal_id TEXT NOT NULL, rule_id INTEGER NOT NULL,
@@ -226,6 +252,53 @@ class DealRepository:
                 )
         self.db.commit()
         return self.list_alert_rules()
+
+    def delete_alert_rule(self, rule_id) -> bool:
+        """Remove one stored alert by its id (the reference was resolved already).
+
+        The row keeps its identity until this point, so the deletion is of the
+        alert the operator described, not of a text that happened to be equal.
+        """
+        cur = self.db.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,))
+        self.db.commit()
+        return cur.rowcount == 1
+
+    def replace_alert_rule(self, rule_id, rule: AlertRule, original_text=None) -> bool:
+        """Rewrite one stored alert in place with the rule of an update.
+
+        The row keeps its id, its creation time and its matches: an update
+        changes the alert, it never creates a second one. The legacy columns
+        and the structured rule are written together so both readers stay in
+        sync.
+        """
+        now = datetime.now(UTC).isoformat()
+        price, unit = legacy_price_columns(rule)
+        try:
+            cur = self.db.execute(
+                """UPDATE alert_rules SET query=?,product_type=?,brand=?,max_price=?,
+                price_unit=?,updated_at=?,original_text=COALESCE(?,original_text),
+                structured_rule=?,schema_version=? WHERE id=?""",
+                (
+                    rule.query,
+                    rule.product,
+                    rule.brand,
+                    price,
+                    unit,
+                    now,
+                    original_text,
+                    rule.model_dump_json(),
+                    rule.schema_version,
+                    rule_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # `(query, product_type, brand, max_price, price_unit)` is unique:
+            # the update would produce an alert that already exists.
+            raise ValueError(
+                "ya tienes otra alerta con esas mismas condiciones"
+            ) from exc
+        self.db.commit()
+        return cur.rowcount == 1
 
     def save_alert_rule(self, rule: AlertRule, original_text: str, enabled=True):
         now = datetime.now(UTC).isoformat()
@@ -631,6 +704,43 @@ class DealRepository:
         )
         self.db.commit()
         return cur.rowcount == 1
+
+    def set_alert_context(self, chat_id, rule_ids):
+        """Remember the alert(s) the bot showed or created last for one chat."""
+        now = datetime.now(UTC).isoformat()
+        ids = json.dumps([int(rule_id) for rule_id in rule_ids])
+        self.db.execute(
+            """INSERT INTO alert_context(chat_id,rule_ids,updated_at) VALUES (?,?,?)
+            ON CONFLICT(chat_id) DO UPDATE SET rule_ids=excluded.rule_ids,
+            updated_at=excluded.updated_at""",
+            (str(chat_id), ids, now),
+        )
+        self.db.commit()
+
+    def get_alert_context(self, chat_id):
+        """The rule ids the bot showed or created last, oldest first."""
+        row = self.db.execute(
+            "SELECT rule_ids FROM alert_context WHERE chat_id=?", (str(chat_id),)
+        ).fetchone()
+        if row is None:
+            return []
+        try:
+            values = json.loads(row[0])
+        except ValueError:
+            return []
+        if not isinstance(values, list):
+            return []
+        stored = []
+        for value in values:
+            try:
+                stored.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return stored
+
+    def clear_alert_context(self, chat_id):
+        self.db.execute("DELETE FROM alert_context WHERE chat_id=?", (str(chat_id),))
+        self.db.commit()
 
     def error_alert_allowed(self, error_type, component, message, cooldown_minutes=60):
         import hashlib
