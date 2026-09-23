@@ -18,6 +18,7 @@ from .config import (
 )
 from .errors import SCAN_FAILED, ChollometroError
 from .graphql_feed import GraphQLFeedClient
+from .health import check as health_check
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .models import format_number
@@ -219,6 +220,7 @@ def main():
     baseline.add_argument("--dry-run", action="store_true")
     check = sub.add_parser("check")
     check.add_argument("--dry-run", action="store_true")
+    sub.add_parser("health", help="Evaluar la salud local del daemon")
     probe = sub.add_parser("test-llm", help="Probar DeepSeek con una sola petición")
     probe.add_argument("text", help="Texto del producto que se extraerá")
     sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
@@ -244,6 +246,8 @@ def main():
         help="Máximo de deals históricos a evaluar (0 = sin límite)",
     )
     a = p.parse_args()
+    if a.command == "health":
+        raise SystemExit(health_check(a.db))
     if a.command == "alert":
         repository = DealRepository(a.db)
         if a.alert_command == "list":
