@@ -6,6 +6,7 @@ import requests
 from .alert_text import merge_intent
 from .errors import ChollometroError
 from .intent import intent_to_rule, notification_window, validate_intent
+from .models import format_number
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,40 @@ def price_suffix(price_unit):
     return f"€/{label}" if label else "€"
 
 
+def degrees(value) -> str:
+    """One Chollometro temperature as it is written back to the operator."""
+    return f"{format_number(value)}°"
+
+
+def temperature_condition(minimum, maximum) -> str | None:
+    """How the temperature window of an alert reads: None when it has none."""
+    if minimum is None and maximum is None:
+        return None
+    if minimum is not None and maximum is not None:
+        return f"entre {degrees(minimum)} y {degrees(maximum)}"
+    if minimum is not None:
+        return f"al menos {degrees(minimum)}"
+    return f"como máximo {degrees(maximum)}"
+
+
+def rule_price_text(rule) -> str:
+    """The price condition a stored alert carries, as it reads back.
+
+    An alert may also have no price at all (its condition is a temperature),
+    which is stated instead of invented.
+    """
+    constraints = rule.constraints
+    for value, unit in (
+        (constraints.max_price, "absolute"),
+        (constraints.max_price_per_unit, "unit"),
+        (constraints.max_price_per_liter, "liter"),
+    ):
+        if value is not None:
+            amount = f"{float(value):.2f}".replace(".", ",")
+            return f"< {amount} {price_suffix(unit)}"
+    return "sin precio"
+
+
 def alert_detail_lines(intent) -> list[str]:
     """The shops and the schedule a created alert really stores.
 
@@ -27,6 +62,9 @@ def alert_detail_lines(intent) -> list[str]:
     it is not lost.
     """
     lines = []
+    temperature = temperature_condition(intent.temperature_min, intent.temperature_max)
+    if temperature:
+        lines.append(f"🌡️ Temperatura: {temperature}")
     if intent.include_merchants or intent.exclude_merchants:
         shops = ", ".join(intent.include_merchants or ("cualquier tienda",))
         if intent.exclude_merchants:
@@ -179,21 +217,12 @@ class TelegramRuleController:
         )
         response.raise_for_status()
 
-    @staticmethod
-    def _format(intent, rows, baseline_count=None):
-        def price(row):
-            return f"{float(row[4]):.2f}".replace(".", ",")
-
-        def unit(row):
-            return price_suffix(row[5])
-
+    def _format(self, intent, rows, baseline_count=None):
         if intent.action == "list":
             if not rows:
                 return "🔔 Tus alertas:\n\nNo tienes alertas configuradas."
             return "🔔 Tus alertas:\n\n" + "\n".join(
-                f"#{r[0]} — {r[1]} — < {price(r)} {unit(r)} — "
-                f"{'activa' if r[6] else 'inactiva'}"
-                for r in rows
+                self._listing_line(row) for row in rows
             )
         verb = {
             "create": "Alerta creada",
@@ -204,11 +233,22 @@ class TelegramRuleController:
         }[intent.action]
         subject = intent.query or intent.product_type or intent.brand or "alerta"
         if intent.action in {"create", "update"}:
-            amount = f"{intent.max_price:.2f}".replace(".", ",")
-            reply = (
-                f"✅ {verb}: {subject} por debajo de "
-                f"{amount} {price_suffix(intent.price_unit)}"
+            conditions = []
+            if intent.max_price is not None:
+                limit = f"{intent.max_price:.2f}".replace(".", ",")
+                conditions.append(
+                    f"por debajo de {limit} {price_suffix(intent.price_unit)}"
+                )
+            temperature = temperature_condition(
+                intent.temperature_min, intent.temperature_max
             )
+            if temperature:
+                # With a price, "… y al menos 250°" completes the sentence; on
+                # its own, it needs the preposition the price condition gave it.
+                conditions.append(temperature if conditions else f"con {temperature}")
+            reply = f"✅ {verb}: {subject}"
+            if conditions:
+                reply += " " + " y ".join(conditions)
             details = alert_detail_lines(intent)
             if details:
                 reply += "\n" + "\n".join(details)
@@ -217,3 +257,43 @@ class TelegramRuleController:
             return reply
         icon = {"delete": "🗑️", "disable": "⏸️", "enable": "▶️"}[intent.action]
         return f"{icon} {verb}: {subject}"
+
+    def _listing_line(self, row):
+        """One stored alert as Telegram lists it, read through its own rule.
+
+        The canonical rule is what says which condition the alert really has:
+        the legacy `max_price` column cannot tell an alert without a price from
+        a price of zero, and a temperature-only alert has no price at all.
+        """
+        rule = self._stored_rule(row)
+        if rule is None:
+            return (
+                f"#{row[0]} — {row[1]} — {self._legacy_price(row)} — "
+                f"{'activa' if row[6] else 'inactiva'}"
+            )
+        parts = [f"#{row[0]} — {row[1]} — {rule_price_text(rule)}"]
+        temperature = temperature_condition(
+            rule.constraints.temperature_min, rule.constraints.temperature_max
+        )
+        if temperature:
+            parts.append(f"🌡️ {temperature}")
+        parts.append("activa" if row[6] else "inactiva")
+        return " — ".join(parts)
+
+    def _stored_rule(self, row):
+        if self.repository is None:
+            return None
+        try:
+            return self.repository.rule_from_listing(row)
+        except (ValueError, TypeError):
+            # A row the canonical boundary cannot resolve is still listed, with
+            # the legacy columns it does have.
+            return None
+
+    @staticmethod
+    def _legacy_price(row):
+        """The legacy price column of a row, or "sin precio" when it has none."""
+        if row[4] in (None, "", "None"):
+            return "sin precio"
+        amount = f"{float(row[4]):.2f}".replace(".", ",")
+        return f"< {amount} {price_suffix(row[5])}"

@@ -157,6 +157,8 @@ class AlertService:
         # Status of the last scan: SUCCESS, PARTIAL or FAILED.
         self.last_scan_status = SCAN_SUCCESS
         self.last_scan_error_type = None
+        # When the last cycle ran (None until the first one), for `status`.
+        self.last_scan_at = None
         # Provider counters of a failed/partial scan, when it did not complete.
         self.last_scan_stats = None
         # Outcome of the last discovery cycle: the window it saw and whether it
@@ -392,9 +394,35 @@ class AlertService:
         kept unchanged, both for installations without a feed client and as the
         controlled degradation when the GraphQL API cannot be reached.
         """
-        if self.feed is not None:
-            return self.run_feed_cycle(pages=pages)
-        return self._run_rule_cycles(pages)
+        try:
+            if self.feed is not None:
+                return self.run_feed_cycle(pages=pages)
+            return self._run_rule_cycles(pages)
+        finally:
+            # The cycle timestamp is recorded for the status surface below,
+            # including a cycle that failed: "I last scanned then" stays true.
+            self.last_scan_at = self._clock().isoformat()
+
+    def status_snapshot(self):
+        """Operational status of the last cycle, for metrics/monitoring.
+
+        The counters are the ones the cycle already keeps (`RunSummary`): the
+        deals the feed handed over, the deals that matched an alert and the
+        notifications Telegram accepted. `last_scan` is the moment the last
+        cycle finished (`None` before the first one) and `last_error` the
+        provider error type of a failed or partial scan, or `None`.
+        """
+        summary = getattr(self, "last_summary", None)
+        if not isinstance(summary, RunSummary):
+            summary = RunSummary()
+        return {
+            "last_scan": self.last_scan_at,
+            "last_scan_status": self.last_scan_status,
+            "last_error": self.last_scan_error_type,
+            "deals_seen": summary.found,
+            "deals_matched": summary.interesting,
+            "notifications_sent": summary.telegram_sent,
+        }
 
     def _run_rule_cycles(self, pages=1):
         """Scan only enabled persisted rules; comparisons remain deterministic."""

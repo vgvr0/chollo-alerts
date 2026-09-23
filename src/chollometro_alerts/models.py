@@ -52,5 +52,10 @@ def format_number(value: Decimal | int | None) -> str:
     """Plain Spanish number for quantities and volumes: `1.98` -> `1,98`."""
     if value is None:
         return "N/D"
-    value = value if isinstance(value, Decimal) else Decimal(value)
+    if isinstance(value, float):
+        # `Decimal(100.1)` would expose the binary representation of the float;
+        # the shortest decimal that round-trips is what the rule really asked for.
+        value = Decimal(str(value))
+    elif not isinstance(value, Decimal):
+        value = Decimal(value)
     return format(value.normalize(), "f").replace(".", ",")

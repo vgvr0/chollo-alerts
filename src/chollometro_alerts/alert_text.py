@@ -4,7 +4,8 @@ The sentence is interpreted by the model, but two of its parts are too
 important to be left to a guess: which shops the alert allows or excludes, and
 which hours may receive Telegram. Both are read here with plain, deterministic
 rules and merged into whatever the provider answered, so a missing or
-hallucinated answer can never silently change them.
+hallucinated answer can never silently change them. The Chollometro
+temperature window ("más de 500 grados", "menos de 100°") is read the same way.
 
 The reader is deliberately conservative:
 
@@ -17,6 +18,10 @@ The reader is deliberately conservative:
   noche") is reported as ambiguous instead of being turned into invented
   bounds: the product has no definition of "night", so the operator is asked
   for the exact hours.
+* a temperature is only read when the number carries a temperature unit
+  (`500 grados`, `500°`). A price (`por menos de 700 €`) is never turned into
+  a temperature, and a negated ceiling ("no quiero chollos por debajo de 100
+  grados") is read as the floor it really states.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .alert_rule import AlertConstraints
 from .alert_rule import NotificationWindow as RuleNotificationWindow
 from .merchants import normalize_merchant
 from .schedule import (
@@ -292,6 +298,161 @@ def vague_period(text: str) -> str | None:
     return match.group(0).strip() if match else None
 
 
+# --- Chollometro temperature ------------------------------------------------ #
+#
+# The degrees of a deal are a provider fact; the sentence only says which
+# values the operator wants. The number is therefore only read when it carries
+# a temperature unit, which is what keeps a price ("por menos de 700 €") from
+# ever becoming a temperature.
+
+_TEMPERATURE_NUMBER = r"\d+(?:[.,]\d+)?"
+# `500°`, `500 °C`, `500 grados`, `500 grados de temperatura`.
+_TEMPERATURE_UNIT = r"(?:°\s*[cf]?|grados?(?:\s+de\s+temperatura)?)"
+
+_TEMPERATURE_RANGE_PATTERNS = (
+    re.compile(
+        rf"\bentre\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*(?:{_TEMPERATURE_UNIT})?"
+        rf"\s*y\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bde\s+({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}"
+        rf"\s+a\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bdesde\s+({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}"
+        rf"\s+hasta\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        re.IGNORECASE,
+    ),
+)
+
+_TEMPERATURE_MIN_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        rf"\b(?:m[áa]s|mas)\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bal\s+menos\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bcomo\s+m[íi]nimo\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bpor\s+lo\s+menos\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bm[íi]nimo\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        (
+            rf"\bsuper(?:a|an|e|en|ar|ior(?:es)?\s+a)\s+(?:los\s+|las\s+)?"
+            rf"({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}"
+        ),
+        rf"\bpor\s+encima\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bmayor(?:es)?\s+(?:que|a|de)\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+    )
+)
+
+_TEMPERATURE_MAX_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        rf"\bno\s+m[áa]s\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bmenos\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bpor\s+menos\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bcomo\s+m[áa]ximo\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bm[áa]ximo\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bhasta\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\binferior(?:es)?\s+a\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bpor\s+debajo\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+        rf"\bmenor(?:es)?\s+(?:que|a|de)\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
+    )
+)
+
+# Words that turn a ceiling into the floor it really states: "no quiero
+# chollos por debajo de 100 grados" is a minimum of 100 degrees.
+_TEMPERATURE_NEGATIONS = re.compile(
+    r"\b(?:no|nunca|sin|evita|evitar|nada\s+de)\b", re.IGNORECASE
+)
+# A cue is read as the floor it states unless the words right before it negate
+# it: "no más de 250 grados" is a ceiling written backwards.
+_TEMPERATURE_NEGATED_TAIL = re.compile(r"\b(?:no|sin|nunca|ni)\s*$", re.IGNORECASE)
+_CLAUSE_BOUNDARIES = ".;\n"
+
+
+@dataclass(frozen=True)
+class TemperatureMentions:
+    """The temperature window a sentence states, in degrees."""
+
+    minimum: float | None = None
+    maximum: float | None = None
+
+    @property
+    def empty(self) -> bool:
+        return self.minimum is None and self.maximum is None
+
+
+def _degrees(raw: str) -> float:
+    """`500` stays whole, `500,5` keeps its decimals."""
+    value = float(raw.replace(",", "."))
+    return int(value) if value.is_integer() else value
+
+
+def _first_outside(patterns, text: str, spans, accept=None) -> re.Match | None:
+    """First match of the highest-priority pattern, outside the given spans."""
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            if any(start <= match.start() < end for start, end in spans):
+                continue
+            if accept is not None and not accept(match):
+                continue
+            return match
+    return None
+
+
+def _negated_before(text: str, start: int) -> bool:
+    """True when the words right before `start` negate the cue."""
+    return _TEMPERATURE_NEGATED_TAIL.search(text[:start]) is not None
+
+
+def _negates_the_ceiling(text: str, match: re.Match) -> bool:
+    """True when a negation word before the cue flips it into a minimum."""
+    if match.group(0).casefold().startswith("no "):
+        # "no más de 300 grados" is a ceiling, not a negated floor.
+        return False
+    clause_start = 0
+    for boundary in _CLAUSE_BOUNDARIES:
+        clause_start = max(clause_start, text.rfind(boundary, 0, match.start()) + 1)
+    return _TEMPERATURE_NEGATIONS.search(text, clause_start, match.start()) is not None
+
+
+def extract_temperature_mentions(text: str) -> TemperatureMentions:
+    """Read the temperature window of a sentence ("más de 500 grados")."""
+    if not text:
+        return TemperatureMentions()
+    minimum = maximum = None
+    consumed: list[tuple[int, int]] = []
+    for pattern in _TEMPERATURE_RANGE_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        # The bounds are taken in the order they were written: a reversed range
+        # ("entre 500 y 100 grados") is a contradiction, and the rule model
+        # answers it with a clarification instead of a silent swap.
+        minimum, maximum = _degrees(match.group(1)), _degrees(match.group(2))
+        consumed.append(match.span())
+        break
+    lower = _first_outside(
+        _TEMPERATURE_MIN_PATTERNS,
+        text,
+        consumed,
+        accept=lambda match: not _negated_before(text, match.start()),
+    )
+    if lower is not None and minimum is None:
+        minimum = _degrees(lower.group(1))
+        consumed.append(lower.span())
+    upper = _first_outside(_TEMPERATURE_MAX_PATTERNS, text, consumed)
+    if upper is not None:
+        value = _degrees(upper.group(1))
+        if _negates_the_ceiling(text, upper):
+            # "no ... por debajo de 100 grados": the deal must reach 100.
+            if minimum is None:
+                minimum = value
+        elif maximum is None:
+            maximum = value
+    return TemperatureMentions(minimum, maximum)
+
+
 def ambiguity_error(text: str) -> str | None:
     """The clarification to ask when a vague period has no concrete hours."""
     period = vague_period(text)
@@ -313,11 +474,16 @@ def merge_intent(intent, text: str):
         raise ValueError(error)
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
+    temperature = extract_temperature_mentions(text)
     updates = {}
     if mentions.allowed:
         updates["include_merchants"] = list(mentions.allowed)
     if mentions.excluded:
         updates["exclude_merchants"] = list(mentions.excluded)
+    if temperature.minimum is not None:
+        updates["temperature_min"] = temperature.minimum
+    if temperature.maximum is not None:
+        updates["temperature_max"] = temperature.maximum
     if window is not None:
         updates["notify_window_start"] = f"{window.start:%H:%M}"
         updates["notify_window_end"] = f"{window.end:%H:%M}"
@@ -332,11 +498,28 @@ def merge_rule(rule, text: str):
         raise ValueError(error)
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
+    temperature = extract_temperature_mentions(text)
     updates = {}
     if mentions.allowed:
         updates["include_merchants"] = tuple(mentions.allowed)
     if mentions.excluded:
         updates["exclude_merchants"] = tuple(mentions.excluded)
+    if not temperature.empty:
+        # The sentence states the temperature window; it is merged through the
+        # model validator so a contradictory pair is a clarification, never a
+        # rule that silently matches nothing.
+        constraints = AlertConstraints.model_validate(
+            {
+                **rule.constraints.model_dump(),
+                "temperature_min": temperature.minimum
+                if temperature.minimum is not None
+                else rule.constraints.temperature_min,
+                "temperature_max": temperature.maximum
+                if temperature.maximum is not None
+                else rule.constraints.temperature_max,
+            }
+        )
+        updates["constraints"] = constraints
     if window is not None:
         updates["notification_window"] = RuleNotificationWindow(
             start=window.start, end=window.end, timezone=window.timezone

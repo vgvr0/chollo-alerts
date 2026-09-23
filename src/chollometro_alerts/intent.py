@@ -47,6 +47,24 @@ class AlertIntent(BaseModel):
         ge=0,
         description="Precio máximo mencionado, sin símbolo de moneda.",
     )
+    temperature_min: float | None = Field(
+        default=None,
+        description=(
+            "Temperatura mínima de Chollometro, en grados, cuando el mensaje "
+            "la pide ('más de 500 grados', 'al menos 500°', 'no quiero "
+            "chollos por debajo de 100 grados'). null si no menciona ninguna "
+            "temperatura. Los grados no son euros: un precio no rellena este "
+            "campo."
+        ),
+    )
+    temperature_max: float | None = Field(
+        default=None,
+        description=(
+            "Temperatura máxima de Chollometro, en grados, cuando el mensaje "
+            "la pide ('menos de 100 grados', 'como máximo 300°'). null si no "
+            "menciona ninguna."
+        ),
+    )
     price_unit: Literal["absolute", "liter", "kilogram", "unit"] | None = Field(
         default=None,
         description=(
@@ -112,6 +130,16 @@ class AlertIntent(BaseModel):
     def clean_text(cls, value):
         return value.strip() if value else value
 
+    @property
+    def has_price(self) -> bool:
+        """True when the intent carries a complete price condition."""
+        return self.max_price is not None and self.price_unit is not None
+
+    @property
+    def has_temperature(self) -> bool:
+        """True when the intent carries a temperature window."""
+        return self.temperature_min is not None or self.temperature_max is not None
+
     @field_validator("include_merchants", "exclude_merchants")
     @classmethod
     def clean_merchants(cls, value):
@@ -127,10 +155,12 @@ def validate_intent(intent: AlertIntent) -> AlertIntent:
         return intent
     if not (intent.query or intent.product_type or intent.brand):
         raise ValueError("Falta el producto o la marca")
-    if intent.action in {"create", "update"} and (
-        intent.max_price is None or intent.price_unit is None
+    if intent.action in {"create", "update"} and not (
+        intent.has_price or intent.has_temperature
     ):
-        raise ValueError("Falta el precio máximo y su unidad")
+        # A price is no longer the only possible condition: an alert that only
+        # filters by Chollometro temperature is just as complete.
+        raise ValueError("Falta el precio máximo y su unidad o una temperatura")
     return intent
 
 
@@ -154,7 +184,17 @@ def intent_to_rule(intent: AlertIntent) -> AlertRule:
             kwargs = {"max_price_per_liter": intent.max_price}
         elif intent.price_unit == "unit":
             kwargs = {"max_price_per_unit": intent.max_price}
-        constraints = AlertConstraints(**kwargs)
+        constraints = AlertConstraints(
+            **kwargs,
+            temperature_min=intent.temperature_min,
+            temperature_max=intent.temperature_max,
+        )
+    elif intent.has_temperature:
+        # A temperature-only alert is a complete rule: it needs no price.
+        constraints = AlertConstraints(
+            temperature_min=intent.temperature_min,
+            temperature_max=intent.temperature_max,
+        )
     return AlertRule(
         query=query,
         product=intent.product_type,

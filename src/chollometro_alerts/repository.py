@@ -169,6 +169,16 @@ class DealRepository:
             "SELECT id FROM alert_rules WHERE query=? AND COALESCE(brand,'')=COALESCE(?, '')",
             (query, intent.brand),
         ).fetchone()
+        # A temperature-only alert has no price at all. The legacy column is
+        # NOT NULL and `save_alert_rule` already writes "0" for every alert
+        # without an absolute price, so the same placeholder is used here: the
+        # structured rule is what says the alert has no price (and no reader
+        # ever sees the text "None").
+        legacy_price = str(intent.max_price) if intent.max_price is not None else "0"
+        # `price_unit` is NOT NULL as well, and its default dimension is the
+        # total price of the deal: an alert that only filters by temperature
+        # says nothing about a per-unit price.
+        legacy_unit = intent.price_unit or "absolute"
         if intent.action == "create":
             duplicate = self.db.execute(
                 "SELECT 1 FROM alert_rules WHERE query=? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
@@ -176,8 +186,8 @@ class DealRepository:
                     query,
                     intent.product_type,
                     intent.brand,
-                    str(intent.max_price),
-                    intent.price_unit,
+                    legacy_price,
+                    legacy_unit,
                 ),
             ).fetchone()
             if not duplicate:
@@ -187,8 +197,8 @@ class DealRepository:
                         query,
                         intent.product_type,
                         intent.brand,
-                        str(intent.max_price),
-                        intent.price_unit,
+                        legacy_price,
+                        legacy_unit,
                         0,
                         "INITIALIZING",
                         now,
@@ -199,7 +209,7 @@ class DealRepository:
             if intent.action == "update":
                 self.db.execute(
                     "UPDATE alert_rules SET max_price=?,price_unit=?,updated_at=?,enabled=1,state='ACTIVE' WHERE id=?",
-                    (str(intent.max_price), intent.price_unit, now, row[0]),
+                    (legacy_price, legacy_unit, now, row[0]),
                 )
             elif intent.action in {"delete", "disable"}:
                 if intent.action == "delete":

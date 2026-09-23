@@ -3,7 +3,7 @@
 from datetime import time
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .schedule import default_timezone, validate_timezone
 
@@ -66,7 +66,57 @@ class AlertConstraints(BaseModel):
     )
     min_quantity: Decimal | None = Field(default=None, gt=0)
     min_volume_l: Decimal | None = Field(default=None, gt=0)
-    min_temperature: int | None = None
+    temperature_min: float | None = Field(
+        default=None,
+        description=(
+            "Temperatura mínima de Chollometro, en grados ('más de 500 "
+            "grados', 'al menos 500°', 'no quiero chollos por debajo de 100 "
+            "grados'). null si el mensaje no pide un mínimo. Los grados nunca "
+            "son euros: un precio no rellena este campo."
+        ),
+    )
+    temperature_max: float | None = Field(
+        default=None,
+        description=(
+            "Temperatura máxima de Chollometro, en grados ('menos de 100 "
+            "grados', 'como máximo 300°'). null si el mensaje no pide un "
+            "máximo."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_temperature(cls, data):
+        """Keep `min_temperature` (the original field name) readable.
+
+        Rules persisted before the temperature range existed store their floor
+        under `min_temperature`. It is renamed here instead of being kept as a
+        second field, so one fact never has two homes.
+        """
+        if isinstance(data, dict) and "min_temperature" in data:
+            data = dict(data)
+            legacy = data.pop("min_temperature")
+            if legacy is not None:
+                data.setdefault("temperature_min", legacy)
+        return data
+
+    @model_validator(mode="after")
+    def ordered_temperature_range(self):
+        if (
+            self.temperature_min is not None
+            and self.temperature_max is not None
+            and self.temperature_min > self.temperature_max
+        ):
+            raise ValueError(
+                "la temperatura mínima no puede superar a la máxima "
+                f"({self.temperature_min} > {self.temperature_max})"
+            )
+        return self
+
+    @property
+    def min_temperature(self) -> float | None:
+        """Read-only alias of `temperature_min`, its original name."""
+        return self.temperature_min
 
 
 class AlertRule(BaseModel):
