@@ -14,6 +14,7 @@ from .filters import (
     ConditionCheck,
     FilterResult,
     InterestEngine,
+    merchant_decision,
 )
 from .models import Deal, format_number
 from .pricing import PricingEngine
@@ -49,6 +50,8 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
         category=alert_rule.category or "generic",
         product_type=alert_rule.product,
         brand=alert_rule.brand,
+        include_merchants=alert_rule.include_merchants,
+        exclude_merchants=alert_rule.exclude_merchants,
         max_price=constraints.max_price,
         max_price_per_liter=constraints.max_price_per_liter,
         max_price_per_unit=constraints.max_price_per_unit,
@@ -210,6 +213,12 @@ class DealEvaluator:
         Identity is checked before any provider call, exactly like production: a
         deal already stored locally never reaches the LLM, it reuses the cached
         extraction or the deterministic one.
+
+        The merchant filter runs before the provider call as well: it depends on
+        the shop alone, so an excluded (or not allowed) shop is rejected without
+        spending an LLM request. The facts of that rejection are the local,
+        deterministic ones, and they are deliberately not cached: the cache is
+        reserved for extractions that were really asked for.
         """
         known = self.repository.exists(deal.deal_id)
         cached = self.repository.get_extraction(deal.deal_id)
@@ -219,6 +228,18 @@ class DealEvaluator:
             )
             from_cache = True
         else:
+            verdict, merchant_checks = merchant_decision(deal.merchant, rule)
+            if not verdict.accepted:
+                extraction = extract_product(deal.product_text or deal.title)
+                priced = self.pricing.evaluate(deal, extraction)
+                return DealEvaluation(
+                    priced,
+                    extraction,
+                    rule,
+                    FilterResult(False, verdict.reason, merchant_checks),
+                    known,
+                    False,
+                )
             extraction = extract_product(
                 deal.product_text or deal.title,
                 llm=None if known else extractor,

@@ -3,7 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .alert_rule import AlertConstraints, AlertRule
+from .alert_rule import AlertConstraints, AlertRule, NotificationWindow
+from .schedule import default_timezone, parse_time, validate_timezone
 
 
 class AlertIntent(BaseModel):
@@ -56,6 +57,48 @@ class AlertIntent(BaseModel):
             "'por kilo' o 'por kilogramo'."
         ),
     )
+    include_merchants: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tiendas permitidas, con los nombres tal y como los escribió el "
+            "usuario (por ejemplo ['Amazon', 'PcComponentes']). null o [] si "
+            "no menciona ninguna: entonces vale cualquier tienda salvo las "
+            "excluidas."
+        ),
+    )
+    exclude_merchants: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tiendas excluidas, con los nombres tal y como los escribió el "
+            "usuario (por ejemplo ['AliExpress']). null o [] si no menciona "
+            "ninguna. Tienen prioridad sobre las permitidas."
+        ),
+    )
+    notify_window_start: str | None = Field(
+        default=None,
+        description=(
+            "Hora local de inicio del horario de avisos en formato HH:MM "
+            "(por ejemplo '08:00'), o null si el usuario no pide un horario. "
+            "Solo acepta horas concretas: si dice 'por la noche' sin horas, "
+            "deja los dos campos en null."
+        ),
+    )
+    notify_window_end: str | None = Field(
+        default=None,
+        description=(
+            "Hora local de fin del horario de avisos en formato HH:MM. Puede "
+            "ser menor que el inicio (por ejemplo '22:00' → '07:00' cruza "
+            "medianoche). null si no hay horario."
+        ),
+    )
+    notify_timezone: str | None = Field(
+        default=None,
+        description=(
+            "Timezone IANA del horario (por ejemplo 'Europe/Madrid'). null "
+            "usa la configurada por defecto. Nunca interpretes las horas como "
+            "UTC."
+        ),
+    )
     rule: AlertRule | None = Field(
         default=None,
         description=(
@@ -68,6 +111,15 @@ class AlertIntent(BaseModel):
     @classmethod
     def clean_text(cls, value):
         return value.strip() if value else value
+
+    @field_validator("include_merchants", "exclude_merchants")
+    @classmethod
+    def clean_merchants(cls, value):
+        """Keep the operator's spelling, drop the blanks, never keep an empty list."""
+        if not value:
+            return None
+        names = [str(name).strip() for name in value if str(name).strip()]
+        return names or None
 
 
 def validate_intent(intent: AlertIntent) -> AlertIntent:
@@ -107,5 +159,28 @@ def intent_to_rule(intent: AlertIntent) -> AlertRule:
         query=query,
         product=intent.product_type,
         brand=intent.brand,
+        include_merchants=tuple(intent.include_merchants or ()),
+        exclude_merchants=tuple(intent.exclude_merchants or ()),
+        notification_window=notification_window(intent),
         constraints=constraints,
+    )
+
+
+def notification_window(intent: AlertIntent) -> NotificationWindow | None:
+    """The schedule the intent really asks for, or None (= notify immediately).
+
+    Only concrete hours are accepted: an intent that carries one of the two
+    hours is an incomplete schedule and asks for a clarification instead of
+    being silently turned into a window.
+    """
+    start, end = intent.notify_window_start, intent.notify_window_end
+    if start is None and end is None:
+        return None
+    if not start or not end:
+        raise ValueError("Falta una de las dos horas del horario")
+    timezone = intent.notify_timezone or default_timezone()
+    return NotificationWindow(
+        start=parse_time(start),
+        end=parse_time(end),
+        timezone=validate_timezone(timezone),
     )

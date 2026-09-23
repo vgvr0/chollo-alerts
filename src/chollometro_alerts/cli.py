@@ -58,10 +58,23 @@ def report_scan_failure(error: ChollometroError) -> None:
 
 def format_alert_listing(rule_id, rule, enabled):
     """Render one stored alert for `alert list`, from the canonical rule."""
-    return (
+    line = (
         f"#{rule_id} — {rule.query} — {rule.product or 'N/D'} — "
         f"{rule.brand or 'N/D'} — {'activa' if enabled else 'inactiva'}"
     )
+    details = []
+    if rule.include_merchants:
+        details.append("tiendas: " + ", ".join(rule.include_merchants))
+    if rule.exclude_merchants:
+        details.append("excepto: " + ", ".join(rule.exclude_merchants))
+    if rule.notification_window is not None:
+        details.append(
+            "avisos: "
+            f"{rule.notification_window.start:%H:%M}"
+            f"–{rule.notification_window.end:%H:%M} "
+            f"{rule.notification_window.timezone}"
+        )
+    return line if not details else line + " — " + " — ".join(details)
 
 
 def _price_unit_label(rule):
