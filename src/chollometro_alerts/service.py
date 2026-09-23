@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from .alert_rule import AlertRule
-from .config import InterestRule
+from .config import InterestRule, error_alert_cooldown_minutes
 from .errors import SCAN_FAILED, SCAN_PARTIAL, SCAN_SUCCESS, ChollometroError
 from .evaluation import DealEvaluator, MatchEvidence, interest_rule_from_alert
 from .filters import InterestEngine
@@ -147,6 +147,9 @@ class AlertService:
         # Optional GraphQL discovery feed. Without it the service keeps the
         # original per-query HTML scans (which are also its HTML fallback).
         self.feed = feed
+        # Cooldown of the operational alerts, read once from the environment
+        # (`ERROR_ALERT_COOLDOWN_MINUTES`, 60 minutes by default).
+        self.error_cooldown_minutes = error_alert_cooldown_minutes()
         self.pricing = PricingEngine()
         self.interest = InterestEngine()
         self.evaluator = DealEvaluator(self.repository, self.pricing, self.interest)
@@ -930,8 +933,12 @@ class AlertService:
         return report
 
     def notify_error(
-        self, error_type, component, message, cooldown_minutes=60, run_id=None
+        self, error_type, component, message, cooldown_minutes=None, run_id=None
     ):
+        # The operator's `ERROR_ALERT_COOLDOWN_MINUTES` is the default; a caller
+        # that passes an explicit value (including a test) still wins.
+        if cooldown_minutes is None:
+            cooldown_minutes = self.error_cooldown_minutes
         if getattr(self.notifier, "dry_run", False):
             return False
         try:

@@ -167,6 +167,7 @@ start-up). The names and defaults below are the ones the code really uses
 | `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` | `0.5` | Base of the exponential backoff. |
 | `CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS` | `30` | Backoff cap. |
 | `SCAN_INTERVAL_MINUTES` | `10` | Delay between discovery cycles in `run` (overridden by `--interval-minutes`). |
+| `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
 | `LLM_ENABLED` | `false` | Enables the DeepSeek extraction fallback. |
 | `LLM_PROVIDER` | `deepseek` | Only supported provider. |
 | `DEEPSEEK_API_KEY` | — | Required when `LLM_ENABLED=true`. |
@@ -176,9 +177,9 @@ start-up). The names and defaults below are the ones the code really uses
 | `ALERT_TIMEZONE` | `Europe/Madrid` | Default timezone of the per-alert notification windows. An alert that names its own timezone always wins. |
 | `MILK_*`, `BEER_*` | — | Legacy thresholds of the env-configured rules used by `check`, `baseline` and `run-rules --dry-run`. |
 
-> `ERROR_ALERT_COOLDOWN_MINUTES` appears in `.env.example`, but no code reads it
-> today: the operational-alert cooldown is fixed at 60 minutes in
-> `AlertService.notify_error`. Setting it has no effect.
+> `ERROR_ALERT_COOLDOWN_MINUTES` is validated at startup: a missing value keeps
+> the 60-minute default, and an unusable one (`0`, a negative number, a text)
+> fails fast with a `ConfigurationError` instead of silently ignoring it.
 
 ## ▶️ Running the project
 
