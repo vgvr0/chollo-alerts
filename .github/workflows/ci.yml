@@ -39,8 +39,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" pytest ruff mypy
 
+      - name: Report CI environment
+        run: |
+          python --version
+          python -m pip --version
+          ruff --version
+          mypy --version
+          pwd
+          git status --short
+          git ls-files '*.py'
+
       - name: Run Ruff check
-        run: ruff check .
+        run: ruff check . --output-format=full
 
       - name: Check Ruff formatting
         run: ruff format --check .
