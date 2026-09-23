@@ -169,6 +169,13 @@ class DeepSeekProductExtractor:
                 "chollo cuenta. Si el mensaje dice un periodo vago ('por la "
                 "noche', 'de madrugada') sin horas concretas, deja los tres "
                 "campos del horario en null: no inventes límites. "
+                "Temperatura: 'temperature_min' y 'temperature_max' son los "
+                "grados de Chollometro ('más de 500 grados' -> 500, 'al menos "
+                "500°' -> 500, 'menos de 100 grados' -> máximo 100, 'entre "
+                "100 y 500 grados' -> mínimo 100 y máximo 500) y solo se "
+                "rellenan cuando el número lleva grados o °; un precio en "
+                "euros nunca es una temperatura. 'no quiero chollos por "
+                "debajo de 100 grados' pide un mínimo de 100. "
                 "No inventes precios ni datos faltantes."
             ),
             "input": text,
@@ -213,7 +220,11 @@ class DeepSeekProductExtractor:
                 "como los escribió el usuario. Rellena notification_window "
                 "solo si el mensaje da horas concretas (HH:MM) y una timezone "
                 "IANA; si solo dice un periodo vago como 'por la noche', "
-                "deja notification_window en null."
+                "deja notification_window en null. En constraints, "
+                "'temperature_min' y 'temperature_max' son la temperatura de "
+                "Chollometro en grados ('más de 500 grados' -> mínimo 500, "
+                "'menos de 100 grados' -> máximo 100) y solo se rellenan "
+                "cuando el número lleva grados o °."
             ),
             "input": text,
             "temperature": 0,

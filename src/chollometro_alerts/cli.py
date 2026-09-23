@@ -19,6 +19,7 @@ from .errors import SCAN_FAILED, ChollometroError
 from .graphql_feed import GraphQLFeedClient
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
+from .models import format_number
 from .product import product_type_matches
 from .replay import (
     DEFAULT_REPLAY_LIMIT,
@@ -63,6 +64,9 @@ def format_alert_listing(rule_id, rule, enabled):
         f"{rule.brand or 'N/D'} — {'activa' if enabled else 'inactiva'}"
     )
     details = []
+    temperature = rule.constraints.temperature_min, rule.constraints.temperature_max
+    if any(value is not None for value in temperature):
+        details.append("temperatura: " + _temperature_label(*temperature))
     if rule.include_merchants:
         details.append("tiendas: " + ", ".join(rule.include_merchants))
     if rule.exclude_merchants:
@@ -75,6 +79,15 @@ def format_alert_listing(rule_id, rule, enabled):
             f"{rule.notification_window.timezone}"
         )
     return line if not details else line + " — " + " — ".join(details)
+
+
+def _temperature_label(minimum, maximum):
+    """How `alert list` reports the temperature window of one rule."""
+    if minimum is not None and maximum is not None:
+        return f"{format_number(minimum)}°-{format_number(maximum)}°"
+    if minimum is not None:
+        return f"≥ {format_number(minimum)}°"
+    return f"≤ {format_number(maximum)}°"
 
 
 def _price_unit_label(rule):

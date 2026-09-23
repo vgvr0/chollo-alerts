@@ -234,6 +234,12 @@ Each cycle is the GraphQL feed + fallback described above.
 Other entry points: `baseline`, `run-rules --dry-run`, `alert parse|add|list|test`,
 `telegram-poll`, `telegram-listen` and `test-llm "<text>"`.
 
+The last cycle is also readable programmatically, without a second metrics
+store: `AlertService.status_snapshot()` returns `last_scan` (when the last
+cycle ran), `last_scan_status`, `last_error`, `deals_seen`, `deals_matched` and
+`notifications_sent`, all of them taken from the counters the cycle already
+keeps (`RunSummary`, `scan_runs`).
+
 ## 💾 Persistence
 
 Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
@@ -468,13 +474,43 @@ The evidence is stored next to the match, so a retried delivery explains the ori
 ## 🔁 Deterministic rule evaluation
 
 `AlertRule.constraints` supports `max_price`, `max_price_per_liter`,
-`max_price_per_unit`, `min_quantity`, `min_volume_l` and `min_temperature`, and
-every constraint present in the rule must hold. `PricingEngine` derives the
-comparable prices (`price_per_liter`, `price_per_unit`) from the extracted facts,
-so `InterestEngine` only compares numbers; when the required fact is unknown (for
-example the quantity of a `max_price_per_unit` rule) the deal is rejected as
-`REJECTED_UNKNOWN_QUANTITY` instead of assuming one unit. The `max_price*` limits
-are exclusive: the price must be strictly below the configured value.
+`max_price_per_unit`, `min_quantity`, `min_volume_l`, `temperature_min` and
+`temperature_max`, and every constraint present in the rule must hold.
+`PricingEngine` derives the comparable prices (`price_per_liter`,
+`price_per_unit`) from the extracted facts, so `InterestEngine` only compares
+numbers; when the required fact is unknown (for example the quantity of a
+`max_price_per_unit` rule) the deal is rejected as `REJECTED_UNKNOWN_QUANTITY`
+instead of assuming one unit. The `max_price*` limits are exclusive: the price
+must be strictly below the configured value.
+
+### Chollometro temperature
+
+The degrees of a deal are a fact the provider already sends
+(`Deal.temperature`, present in both the GraphQL feed and the HTML parser), so
+the alert only says which values it wants:
+
+```text
+Avísame de cualquier chollo con más de 500 grados  → temperature_min = 500
+Avísame si supera los 1000°                        → temperature_min = 1000
+Amazon con más de 300 grados                       → temperature_min = 300
+Portátiles por menos de 700 € y al menos 250°      → max_price = 700, temperature_min = 250
+No quiero chollos por debajo de 100 grados         → temperature_min = 100
+menos de 100 grados                                → temperature_max = 100
+entre 100 y 500 grados                             → temperature_min = 100, temperature_max = 500
+```
+
+The temperature is one more AND condition of the same `InterestRule`: a deal
+matches only when every configured condition holds, and the bounds are
+inclusive (`425° ≥ 300°`, `150° ≤ 300°`). A deal whose temperature is unknown
+cannot prove the condition and is rejected as `REJECTED_TEMPERATURE`, exactly
+like an unknown quantity rejects a price-per-unit rule. The number is only read
+as a temperature when it carries a temperature unit, so `por menos de 700 €`
+never becomes a ceiling of 700 degrees, and a negated ceiling ("no quiero
+chollos por debajo de 100 grados") is stored as the floor it really states.
+`AlertRule.constraints` therefore keeps a single field per bound: the original
+`min_temperature` name is still *accepted* on input (persisted rules written by
+an older version keep loading) and is exposed as a read-only alias, but it is
+never stored next to `temperature_min`.
 
 Outside `constraints`, a rule also carries the shops it allows and excludes
 (`include_merchants`, `exclude_merchants`) and, optionally, a per-alert
@@ -546,12 +582,15 @@ Avísame de portátiles gaming por menos de 1000 € de Amazon o PcComponentes p
 | `no AliExpress`, `excepto AliExpress`, `excluir AliExpress` | `exclude_merchants` |
 | `solo entre las 08:00 y las 23:00`, `avísame de 8:00 a 23:00`, `08:00-23:00` | `notification_window` |
 | `… Europe/Madrid`, `hora peninsular`, `hora española` | `notification_window.timezone` |
+| `más de 500 grados`, `al menos 500°`, `no quiero chollos por debajo de 100 grados` | `constraints.temperature_min` |
+| `menos de 100 grados`, `como máximo 300°`, `no más de 250°` | `constraints.temperature_max` |
+| `entre 100 y 500 grados`, `de 250 grados a 750°` | `temperature_min` + `temperature_max` |
 
-The shop lists and the hours are read from the sentence itself
-(`alert_text.py`), not only from the model, and the deterministic reading wins:
-it comes from the literal text, so it cannot be a hallucination. The model
-still covers what that reader does not understand (a lowercase shop name, a
-language it does not speak).
+The shop lists, the hours and the temperature window are read from the sentence
+itself (`alert_text.py`), not only from the model, and the deterministic reading
+wins: it comes from the literal text, so it cannot be a hallucination. The
+model still covers what that reader does not understand (a lowercase shop name,
+a language it does not speak).
 
 **Vague periods are never invented.** `no me avises por la noche` is
 recognised, and the bot answers asking for the exact hours

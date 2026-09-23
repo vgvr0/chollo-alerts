@@ -239,16 +239,35 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
                 f"{format_amount(deal.price)} ≤ {format_amount(rule.max_price)}",
             )
         )
-    if rule.min_temperature is not None:
-        if deal.temperature is None or deal.temperature < rule.min_temperature:
+    # The temperature window is one more AND condition, checked after the price
+    # and before the merchant: a deal whose temperature is unknown cannot prove
+    # the condition, so it is rejected instead of being announced, and the
+    # bounds are inclusive (`425° ≥ 300°`, `150° ≤ 300°`).
+    if rule.temperature_min is not None or rule.temperature_max is not None:
+        if deal.temperature is None:
             return verdict(False, "REJECTED_TEMPERATURE")
-        checks.append(
-            ConditionCheck(
-                "MIN_TEMPERATURE",
-                "Temperatura mínima",
-                f"{deal.temperature}° ≥ {rule.min_temperature}°",
+        if rule.temperature_min is not None and deal.temperature < rule.temperature_min:
+            return verdict(False, "REJECTED_TEMPERATURE")
+        if rule.temperature_max is not None and deal.temperature > rule.temperature_max:
+            return verdict(False, "REJECTED_TEMPERATURE")
+        if rule.temperature_min is not None:
+            checks.append(
+                ConditionCheck(
+                    "MIN_TEMPERATURE",
+                    "Temperatura mínima",
+                    f"{format_number(deal.temperature)}° ≥ "
+                    f"{format_number(rule.temperature_min)}°",
+                )
             )
-        )
+        if rule.temperature_max is not None:
+            checks.append(
+                ConditionCheck(
+                    "MAX_TEMPERATURE",
+                    "Temperatura máxima",
+                    f"{format_number(deal.temperature)}° ≤ "
+                    f"{format_number(rule.temperature_max)}°",
+                )
+            )
     merchant_result, merchant_checks = merchant_decision(deal.merchant, rule)
     if not merchant_result.accepted:
         return verdict(False, merchant_result.reason)

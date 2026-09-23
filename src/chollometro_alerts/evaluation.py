@@ -57,7 +57,8 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
         max_price_per_unit=constraints.max_price_per_unit,
         min_quantity=constraints.min_quantity,
         min_volume_l=constraints.min_volume_l,
-        min_temperature=constraints.min_temperature,
+        temperature_min=constraints.temperature_min,
+        temperature_max=constraints.temperature_max,
     )
 
 

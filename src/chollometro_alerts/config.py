@@ -231,7 +231,11 @@ def _list(name):
 class InterestRule:
     category: str
     max_price: Decimal | None = None
-    min_temperature: int | None = None
+    # Chollometro temperature window, in degrees. `temperature_min` is the old
+    # `min_temperature` (kept as an accepted alias below): a deal must reach the
+    # floor, and must not exceed the ceiling when one is configured.
+    temperature_min: float | None = None
+    temperature_max: float | None = None
     include_keywords: tuple[str, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
     include_merchants: tuple[str, ...] = ()
@@ -243,6 +247,35 @@ class InterestRule:
     min_volume_l: Decimal | None = None
     product_type: str | None = None
     brand: str | None = None
+
+
+_INTEREST_RULE_ALIASES = {"min_temperature": "temperature_min"}
+_interest_rule_init = InterestRule.__init__
+
+
+def _interest_rule_init_with_legacy_aliases(self, *args, **kwargs):
+    """Accept the original field names next to the canonical ones.
+
+    `min_temperature` was the only temperature dimension of a rule before the
+    range existed. Existing configuration, call sites and tests keep using it;
+    the canonical field is `temperature_min`.
+    """
+    for legacy, canonical in _INTEREST_RULE_ALIASES.items():
+        if legacy in kwargs:
+            kwargs.setdefault(canonical, kwargs.pop(legacy))
+    _interest_rule_init(self, *args, **kwargs)
+
+
+InterestRule.__init__ = _interest_rule_init_with_legacy_aliases
+
+
+@property
+def _temperature_min_alias(self):
+    """`rule.min_temperature`, the original read name of the floor."""
+    return self.temperature_min
+
+
+InterestRule.min_temperature = _temperature_min_alias
 
 
 def _decimal(name):
@@ -273,7 +306,9 @@ def load_rules():
         "beer": InterestRule(
             category="beer",
             max_price=_decimal("BEER_MAX_PRICE"),
-            min_temperature=_int("BEER_MIN_TEMPERATURE"),
+            # The environment variable keeps its original name: renaming the
+            # field must not silently drop an operator's configured threshold.
+            temperature_min=_int("BEER_MIN_TEMPERATURE"),
             include_keywords=_list("BEER_INCLUDE_KEYWORDS"),
             exclude_keywords=_list("BEER_EXCLUDE_KEYWORDS"),
             include_merchants=_list("BEER_INCLUDE_MERCHANTS"),
