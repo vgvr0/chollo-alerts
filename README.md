@@ -181,6 +181,68 @@ start-up). The names and defaults below are the ones the code really uses
 > the 60-minute default, and an unusable one (`0`, a negative number, a text)
 > fails fast with a `ConfigurationError` instead of silently ignoring it.
 
+## Deployment
+
+The supported managed deployment is a single Render **Background Worker** built
+from this repository's `Dockerfile`. It runs `chollometro-alerts run` as its
+main process and uses a 1 GB Render Persistent Disk mounted at `/data`.
+
+SQLite is deliberately single-instance: `numInstances: 1` is required, and
+multiple replicas or workers sharing this database are not supported. Render
+stops the old worker before replacing it when a disk is attached, avoiding two
+versions writing the same SQLite file during a deploy. The disk is persistent
+across restarts, redeploys and container replacement; the container root
+filesystem is not.
+
+The durable database path is:
+
+```text
+DATABASE_PATH=/data/chollometro.sqlite3
+```
+
+Set the three credentials in Render's Environment settings as secrets, without
+putting values in `render.yaml` or Git:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+DEEPSEEK_API_KEY
+```
+
+`DEEPSEEK_API_KEY` is only required when `LLM_ENABLED=true`. Non-secret runtime
+settings are declared in `render.yaml`; the names actually supported by this
+project are `SCAN_INTERVAL_MINUTES`, `ALERT_TIMEZONE`,
+`ERROR_ALERT_COOLDOWN_MINUTES`, `DEEPSEEK_MODEL`, `LLM_ENABLED`,
+`DATABASE_PATH`, `HEALTH_STALE_AFTER_MINUTES`, and
+`HEALTH_STARTUP_GRACE_MINUTES`. `TIMEZONE` is not an alias: the application
+consumes `ALERT_TIMEZONE`.
+
+Create the Render service from the repository Blueprint, review the secret
+fields, and deploy. No public port is needed. The image contains a Docker
+`HEALTHCHECK` that executes `chollometro-alerts health`, but Render documents
+health checks only for web and private services, not background workers. Treat
+the Docker healthcheck as a local/container check, not as a Render worker
+restart signal; Render worker restart behavior is managed by the service and
+the process exit/SIGTERM lifecycle.
+Locally, the equivalent is:
+
+```bash
+docker compose up --build
+docker compose run --rm chollometro-alerts chollometro-alerts health
+```
+
+Compose uses `restart: unless-stopped` locally. Render has no equivalent
+Compose setting: it runs the Dockerfile `CMD` and manages the worker instance
+itself. Use Render logs to inspect `daemon.started`, `scan.started`,
+`scan.completed`/`scan.failed`, and `daemon.stopping`. Test a controlled
+restart from Render, then run `health` and confirm alert rules and scan state
+remain present on the disk. A redeploy of the same commit should preserve the
+same data volume.
+
+To update the version, deploy a new commit from the repository and verify the
+service logs and health state after the replacement. Production auto-deploy is
+not part of CI in this repository; `render.yaml` only describes the service.
+
 ## ▶️ Running the project
 
 Install it once, in a virtual environment of your choice (the package is a plain
@@ -204,10 +266,10 @@ docker compose logs -f
 docker compose down
 ```
 
-Compose monta `./data` en `/app/data` y configura `DATABASE_PATH` como
-`/app/data/chollometro.sqlite3`, por lo que la SQLite sobrevive a la recreación
-del contenedor. También se puede cambiar `DATABASE_PATH` si se ejecuta la
-imagen directamente.
+Compose monta el volumen `chollometro-data` en `/data` y configura
+`DATABASE_PATH` como `/data/chollometro.sqlite3`, por lo que la SQLite sobrevive
+a la recreación del contenedor. También se puede cambiar `DATABASE_PATH` si se
+ejecuta la imagen directamente.
 
 El estado local se puede consultar sin red:
 

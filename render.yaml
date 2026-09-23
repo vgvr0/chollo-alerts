@@ -1,0 +1,36 @@
+services:
+  - type: worker
+    name: chollometro-alerts
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: commit
+    numInstances: 1
+    disk:
+      name: chollometro-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/chollometro.sqlite3
+      - key: SCAN_INTERVAL_MINUTES
+        value: "10"
+      - key: ALERT_TIMEZONE
+        value: Europe/Madrid
+      - key: ERROR_ALERT_COOLDOWN_MINUTES
+        value: "60"
+      - key: HEALTH_STALE_AFTER_MINUTES
+        value: "30"
+      - key: HEALTH_STARTUP_GRACE_MINUTES
+        value: "20"
+      - key: DEEPSEEK_MODEL
+        value: deepseek-flash
+      - key: LLM_ENABLED
+        value: "false"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false

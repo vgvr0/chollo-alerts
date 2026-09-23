@@ -1,11 +1,15 @@
 services:
   chollometro-alerts:
     build: .
+    command: ["chollometro-alerts", "run"]
     env_file:
       - path: .env
         required: false
     environment:
-      DATABASE_PATH: /app/data/chollometro.sqlite3
+      DATABASE_PATH: /data/chollometro.sqlite3
     restart: unless-stopped
     volumes:
-      - ./data:/app/data
+      - chollometro-data:/data
+
+volumes:
+  chollometro-data:
