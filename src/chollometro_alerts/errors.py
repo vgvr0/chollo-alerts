@@ -89,3 +89,15 @@ class ChollometroParseError(ChollometroError):
 
     code = "PARSE_ERROR"
     retryable = False
+
+
+class ChollometroGraphQLError(ChollometroError):
+    """The GraphQL endpoint answered with a well-formed error payload.
+
+    A rejected document, a rejected operation or an introspection attempt all
+    come back as HTTP 200 with an `errors` array. That is a provider failure,
+    never an empty feed, so the discovery cycle can degrade to the HTML path.
+    """
+
+    code = "GRAPHQL_ERROR"
+    retryable = False

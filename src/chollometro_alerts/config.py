@@ -125,6 +125,74 @@ class ChollometroSettings:
         return cls(timeout, retries, backoff, max_backoff)
 
 
+# Window behaviour of `threads(filter: {}, limit: N)`, measured against the live
+# endpoint (2026-09-23):
+#
+#   * `limit` omitted (or null) -> 30 threads: the server's own default window.
+#   * 1 <= limit <= 20          -> exactly that many threads.
+#   * limit >= 21               -> silently clamped to 20, with no GraphQL error.
+#
+# A single request therefore returns at most 30 threads, and the widest legal
+# window is the default one: asking for `limit: 30` is NOT the same request as
+# omitting the argument, it returns 20.
+GRAPHQL_DEFAULT_WINDOW = 30
+GRAPHQL_MAX_EXPLICIT_WINDOW = 20
+
+
+@dataclass(frozen=True)
+class GraphQLFeedSettings:
+    """Policy of the GraphQL discovery feed (one fetch per scan cycle).
+
+    The endpoint is the site's internal Pepper GraphQL API. `window_limit` is
+    the whole visibility window of the scanner, so promotions that fall out of
+    it are never evaluated. It is `None` by default, which means the request
+    carries no `limit` argument at all: the live endpoint then answers with its
+    own default window of 30 threads, the widest answer it gives. Setting it to
+    1..20 asks for that many explicitly; a larger value is rejected because the
+    server would silently clamp it to 20.
+    """
+
+    enabled: bool = True
+    window_limit: int | None = None
+    path: str = "/graphql"
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        raw = os.getenv("CHOLLOMETRO_GRAPHQL_DISCOVERY", "true").strip().casefold()
+        if raw not in {"true", "false"}:
+            raise ConfigurationError(
+                "CHOLLOMETRO_GRAPHQL_DISCOVERY debe ser true o false"
+            )
+        enabled = raw == "true"
+        window = _window_limit()
+        path = os.getenv("CHOLLOMETRO_GRAPHQL_PATH", "/graphql").strip() or "/graphql"
+        if not path.startswith("/"):
+            raise ConfigurationError("CHOLLOMETRO_GRAPHQL_PATH debe empezar por /")
+        return cls(enabled, window, path)
+
+
+def _window_limit():
+    """`None` (no `limit` argument) unless the operator asked for 1..20."""
+    raw = os.getenv("CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            "CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT debe ser un entero"
+        ) from exc
+    if not 1 <= value <= GRAPHQL_MAX_EXPLICIT_WINDOW:
+        raise ConfigurationError(
+            "CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT debe estar entre 1 y "
+            f"{GRAPHQL_MAX_EXPLICIT_WINDOW}: el endpoint recorta a 20 cualquier "
+            "limit mayor, y omitirlo devuelve la ventana máxima de "
+            f"{GRAPHQL_DEFAULT_WINDOW}"
+        )
+    return value
+
+
 def _list(name):
     return tuple(
         x.strip().casefold() for x in os.getenv(name, "").split(",") if x.strip()
