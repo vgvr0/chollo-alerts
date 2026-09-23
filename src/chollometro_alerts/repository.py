@@ -11,6 +11,24 @@ from .models import Deal
 
 DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
 
+# Keys of the single-row `feed_state` table used by the GraphQL discovery feed.
+FEED_BOOTSTRAP_KEY = "bootstrap_at"
+FEED_WATERMARK_KEY = "newest_published_at"
+
+
+def as_utc(value):
+    """Return a timestamp as timezone-aware UTC.
+
+    Every writer stores ISO-8601 strings built from `datetime.now(UTC)`, but a
+    database created by an older version (or by hand) may hold a naive value.
+    Reading a naive timestamp as UTC is the only interpretation that keeps the
+    alert window monotonic with the provider timestamps.
+    """
+    if value is None:
+        return None
+    stamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
 
 class DealRepository:
     def __init__(self, path="deals.sqlite3"):
@@ -86,6 +104,17 @@ class DealRepository:
             fetched_items INTEGER, parsed_items INTEGER, relevant_items INTEGER,
             matching_items INTEGER, new_items INTEGER, notifications_sent INTEGER,
             status TEXT NOT NULL, error_type TEXT
+        )""")
+        # One row per thread ever seen in the GraphQL feed: the existence of the
+        # row is the "seen" state behind the "only new deals" guarantee.
+        # `first_seen_at` is the discovery time, `published_at` the provider
+        # timestamp of the thread (what the alert window compares against).
+        db.execute("""CREATE TABLE IF NOT EXISTS feed_threads (
+            thread_id TEXT PRIMARY KEY, published_at TEXT,
+            first_seen_at TEXT NOT NULL
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS feed_state (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
         )""")
         db.commit()
 
@@ -328,6 +357,134 @@ class DealRepository:
             (rule_id,),
         ).fetchone()
 
+    def alert_rule_created_at(self, rule_id):
+        """Real creation timestamp of a rule: the lower bound of its alerts."""
+        row = self.db.execute(
+            "SELECT created_at FROM alert_rules WHERE id=?", (rule_id,)
+        ).fetchone()
+        return as_utc(row[0]) if row and row[0] else None
+
+    def alert_rule_original_text(self, rule_id):
+        """The text the operator wrote for one alert, when it is stored.
+
+        It is the alert's own name, so the notification can quote the alert
+        that matched instead of inferring anything from the deal.
+        """
+        row = self.db.execute(
+            "SELECT original_text FROM alert_rules WHERE id=?", (rule_id,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def feed_state(self, key):
+        row = self.db.execute(
+            "SELECT value FROM feed_state WHERE key=?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_feed_state(self, key, value):
+        now = datetime.now(UTC).isoformat()
+        self.db.execute(
+            """INSERT INTO feed_state(key,value,updated_at) VALUES (?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+            updated_at=excluded.updated_at""",
+            (key, value, now),
+        )
+        self.db.commit()
+
+    def feed_is_initialized(self):
+        """False until the first discovery cycle snapshotted the current feed."""
+        return self.feed_state(FEED_BOOTSTRAP_KEY) is not None
+
+    def mark_feed_initialized(self, at=None):
+        self.set_feed_state(
+            FEED_BOOTSTRAP_KEY, as_utc(at or datetime.now(UTC)).isoformat()
+        )
+
+    def seen_feed_thread_ids(self, thread_ids=None):
+        """Thread ids already present in the feed store (all, or the given ones)."""
+        if thread_ids is None:
+            rows = self.db.execute("SELECT thread_id FROM feed_threads")
+            return {row[0] for row in rows}
+        wanted = [str(thread_id) for thread_id in thread_ids]
+        if not wanted:
+            return set()
+        seen = set()
+        # Chunked because SQLite has a limit on bound parameters, and the feed
+        # window is small but the store grows over time.
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.db.execute(
+                f"SELECT thread_id FROM feed_threads WHERE thread_id IN ({placeholders})",
+                chunk,
+            )
+            seen.update(row[0] for row in rows)
+        return seen
+
+    def feed_thread_count(self):
+        """How many distinct threads the feed store already knows about.
+
+        The discovery cycle uses it as the guard of the "no overlap" risk
+        signal: a window that overlaps nothing only means something when there
+        is a history to overlap with.
+        """
+        row = self.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()
+        return row[0] if row else 0
+
+    def record_feed_threads(self, deals, *, at=None):
+        """Register feed threads as seen. Bulk, idempotent, never re-timestamps."""
+        now = as_utc(at or datetime.now(UTC)).isoformat()
+        rows = [
+            (
+                deal.deal_id,
+                deal.published_at.isoformat() if deal.published_at else None,
+                now,
+            )
+            for deal in deals
+            if deal.deal_id
+        ]
+        if not rows:
+            return 0
+        cur = self.db.executemany(
+            """INSERT OR IGNORE INTO feed_threads
+            (thread_id,published_at,first_seen_at) VALUES (?,?,?)""",
+            rows,
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def feed_watermark(self):
+        """Newest `published_at` of the previous cycle, or None."""
+        return as_utc(self.feed_state(FEED_WATERMARK_KEY))
+
+    def set_feed_watermark(self, published_at):
+        if published_at is None:
+            return
+        self.set_feed_state(FEED_WATERMARK_KEY, as_utc(published_at).isoformat())
+
+    def pending_rule_notifications(self, limit=50):
+        """Matched (rule, deal) pairs awaiting Telegram, oldest first.
+
+        These are the rows a Telegram failure leaves behind: the match is
+        already durable, the notification is not, so the next cycle can retry
+        them even when the deal has already left the provider window.
+        """
+        rows = self.db.execute(
+            """SELECT o.rule_id, o.deal_id FROM rule_deal_observations o
+            JOIN alert_rules r ON r.id = o.rule_id
+            WHERE r.enabled = 1 AND o.matched = 1 AND o.notified_at IS NULL
+            ORDER BY o.first_seen_at, o.deal_id LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def get_deal(self, deal_id):
+        """Rebuild a persisted deal (used to re-render a pending notification)."""
+        row = self.db.execute(
+            f"SELECT {DEAL_COLUMNS} FROM deals WHERE deal_id=?", (deal_id,)
+        ).fetchone()
+        return self.deal_from_row(row) if row else None
+
     def set_rule_state(self, rule_id, state, enabled=None):
         if enabled is None:
             self.db.execute(
@@ -358,8 +515,11 @@ class DealRepository:
     def record_rule_observation_result(
         self, rule_id, deal_id, matched, rejection_reason=None
     ):
+        # A row that carries a verdict is not a baseline snapshot any more, so
+        # the flag is cleared here: baseline rows have no verdict by definition.
         self.db.execute(
-            "UPDATE rule_deal_observations SET matched=?,rejection_reason=? WHERE rule_id=? AND deal_id=?",
+            "UPDATE rule_deal_observations SET matched=?,baseline=0,rejection_reason=? "
+            "WHERE rule_id=? AND deal_id=?",
             (int(matched), rejection_reason, rule_id, deal_id),
         )
         self.db.commit()

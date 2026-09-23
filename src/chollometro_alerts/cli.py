@@ -8,8 +8,15 @@ import requests
 from dotenv import load_dotenv
 
 from .client import ChollometroClient
-from .config import PROJECT_ROOT, ConfigurationError, TelegramSettings, load_rules
+from .config import (
+    PROJECT_ROOT,
+    ConfigurationError,
+    GraphQLFeedSettings,
+    TelegramSettings,
+    load_rules,
+)
 from .errors import SCAN_FAILED, ChollometroError
+from .graphql_feed import GraphQLFeedClient
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .product import product_type_matches
@@ -91,6 +98,17 @@ def test_llm(text, parser):
 
 def _price_label(price):
     return f"{price:.2f} €" if price is not None else "N/D"
+
+
+def build_feed_client():
+    """GraphQL discovery feed, or None when the operator disabled it.
+
+    The client is only constructed (no request happens here), so a daemon that
+    starts with the feed disabled never touches the GraphQL endpoint and keeps
+    the original per-query HTML behaviour.
+    """
+    settings = GraphQLFeedSettings.from_env()
+    return GraphQLFeedClient(feed_settings=settings) if settings.enabled else None
 
 
 def _result_label(entry):
@@ -299,6 +317,7 @@ def main():
                 ChollometroClient(),
                 repository,
                 TelegramNotifier(telegram.bot_token, telegram.authorized_chat_id),
+                feed=build_feed_client(),
             )
         controller = TelegramRuleController(
             bot_token=telegram.bot_token,

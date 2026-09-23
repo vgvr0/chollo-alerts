@@ -1,6 +1,7 @@
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from .alert_rule import AlertRule
 from .config import InterestRule
@@ -9,11 +10,69 @@ from .evaluation import DealEvaluator, interest_rule_from_alert
 from .filters import InterestEngine
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
+from .repository import as_utc
 
 logger = logging.getLogger(__name__)
 
 # How the outcomes of several rules are collapsed into one cycle status.
 _SCAN_PRECEDENCE = {SCAN_SUCCESS: 0, SCAN_PARTIAL: 1, SCAN_FAILED: 2}
+
+# Outcome of the discovery feed inside a cycle, independent from the scan
+# status of the HTML provider: the feed can fall back while the cycle still
+# delivers alerts through the per-query HTML scans.
+FEED_DISABLED = "DISABLED"
+FEED_OK = "OK"
+FEED_SKIPPED = "SKIPPED"
+FEED_FALLBACK = "FALLBACK"
+
+# One row per discovery cycle in `scan_runs`; the HTML path keeps its own rows.
+FEED_QUERY_LABEL = "graphql:feed"
+
+# Upper bound of delivery retries per cycle, so a Telegram outage cannot turn
+# one cycle into an unbounded loop.
+PENDING_NOTIFICATION_LIMIT = 50
+
+# Only transient failures are retried by the feed client; this is the label the
+# operational alert uses when a GraphQL failure degraded the cycle.
+FEED_COMPONENT = "GraphQLFeedClient"
+
+
+def published_after_alert(deal, created_at):
+    """True only when the deal is provably newer than the alert creation.
+
+    The provider timestamp and the stored `created_at` are compared in UTC. A
+    deal without a timestamp is never considered "published after": the alert
+    cannot prove it is new, so it stays silent.
+    """
+    if deal.published_at is None or created_at is None:
+        return False
+    return as_utc(deal.published_at) > as_utc(created_at)
+
+
+def _isoformat(value):
+    """ISO-8601 for logs; a missing provider timestamp is reported as N/D."""
+    return value.isoformat() if value is not None else "N/D"
+
+
+def _window_label(limit):
+    """How to name the window in logs: `limit` omitted means the server's own."""
+    return "server_default" if limit is None else limit
+
+
+def _unique_feed_deals(deals):
+    """One entry per thread id, first occurrence wins (the window is newest-first).
+
+    The provider already deduplicates its window; the cycle repeats the guard so
+    a repeated id can never be evaluated — or notified — twice in one pass.
+    """
+    unique = []
+    seen = set()
+    for deal in deals:
+        if deal.deal_id in seen:
+            continue
+        seen.add(deal.deal_id)
+        unique.append(deal)
+    return unique
 
 
 def worst_scan_status(statuses):
@@ -35,6 +94,7 @@ class RunSummary:
     deterministic_count: int = 0
     llm_count: int = 0
     hybrid_count: int = 0
+    before_alert: int = 0
     llm_calls: int = 0
     llm_cache_hits: int = 0
     llm_failures: int = 0
@@ -60,12 +120,20 @@ class RunSummary:
 
 class AlertService:
     def __init__(
-        self, client, repository, notifier, extractor: ProductExtractor | None = None
+        self,
+        client,
+        repository,
+        notifier,
+        extractor: ProductExtractor | None = None,
+        feed=None,
     ):
         self.client = client
         self.repository = repository
         self.notifier = notifier
         self.extractor = extractor
+        # Optional GraphQL discovery feed. Without it the service keeps the
+        # original per-query HTML scans (which are also its HTML fallback).
+        self.feed = feed
         self.pricing = PricingEngine()
         self.interest = InterestEngine()
         self.evaluator = DealEvaluator(self.repository, self.pricing, self.interest)
@@ -75,6 +143,17 @@ class AlertService:
         self.last_scan_error_type = None
         # Provider counters of a failed/partial scan, when it did not complete.
         self.last_scan_stats = None
+        # Outcome of the last discovery cycle: the window it saw and whether it
+        # had to degrade to the HTML provider.
+        self.last_feed_status = FEED_DISABLED if feed is None else FEED_OK
+        self.last_feed_error_type = None
+        self.last_feed_received = 0
+        self.last_feed_new = 0
+        self.last_feed_oldest_age_seconds = None
+        # Threads of the window that were already known: the loss signal the
+        # cycle actually acts on (a saturated window alone means nothing).
+        self.last_feed_overlap = None
+        self.last_feed_window_full = False
 
     def run(self, queries, pages=1, rules=None):
         # Static/check mode is kept for compatibility; the daemon never enters
@@ -140,26 +219,8 @@ class AlertService:
             evaluation = self.evaluator.evaluate(
                 deal, rule, extractor=extractor, persist_extraction=not dry_run
             )
-            deal, extraction, result = (
-                evaluation.deal,
-                evaluation.extraction,
-                evaluation.result,
-            )
-            self.last_summary.already_known += int(evaluation.known)
-            if evaluation.from_cache:
-                self.extraction_cache_hits += 1
-                self.last_summary.llm_cache_hits += 1
-            for field in ("llm_calls", "llm_failures", "llm_tokens"):
-                key = field.upper()
-                value = getattr(extractor, "metrics", {}).get(key, 0)
-                setattr(self.last_summary, field, value - initial_metrics.get(key, 0))
-            source_count = f"{extraction.extraction_source}_count"
-            setattr(
-                self.last_summary,
-                source_count,
-                getattr(self.last_summary, source_count) + 1,
-            )
-            self.last_summary.classified += 1
+            deal, result = evaluation.deal, evaluation.result
+            self._record_evaluation(evaluation, extractor, initial_metrics)
             results.append((rule_id, query, deal, rule, result))
             if not result.accepted:
                 logger.info(
@@ -301,6 +362,18 @@ class AlertService:
             raise
 
     def run_active_rules(self, pages=1):
+        """Run one scan cycle: discovery feed when configured, HTML otherwise.
+
+        The GraphQL cycle fetches the newest threads exactly once and evaluates
+        only the new ones against every active rule. The per-query HTML loop is
+        kept unchanged, both for installations without a feed client and as the
+        controlled degradation when the GraphQL API cannot be reached.
+        """
+        if self.feed is not None:
+            return self.run_feed_cycle(pages=pages)
+        return self._run_rule_cycles(pages)
+
+    def _run_rule_cycles(self, pages=1):
         """Scan only enabled persisted rules; comparisons remain deterministic."""
         total = 0
         statuses = []
@@ -316,6 +389,365 @@ class AlertService:
         # completely successful cycle.
         self.last_scan_status = worst_scan_status(statuses)
         return total
+
+    def _record_evaluation(self, evaluation, extractor, initial_metrics):
+        """Counters shared by the HTML scans and the GraphQL discovery cycle."""
+        self.last_summary.already_known += int(evaluation.known)
+        if evaluation.from_cache:
+            self.extraction_cache_hits += 1
+            self.last_summary.llm_cache_hits += 1
+        for field in ("llm_calls", "llm_failures", "llm_tokens"):
+            key = field.upper()
+            value = getattr(extractor, "metrics", {}).get(key, 0)
+            setattr(self.last_summary, field, value - initial_metrics.get(key, 0))
+        source_count = f"{evaluation.extraction.extraction_source}_count"
+        setattr(
+            self.last_summary,
+            source_count,
+            getattr(self.last_summary, source_count) + 1,
+        )
+        self.last_summary.classified += 1
+
+    # --- GraphQL discovery cycle ------------------------------------------
+
+    def run_feed_cycle(self, pages=1):
+        """Fetch the feed once, then evaluate only the deals that are new.
+
+        Persistence order is deliberate: a thread is registered as seen only
+        after its per-rule outcome is durable, and a delivery that fails leaves
+        a pending (matched, not notified) observation behind. That pending row
+        is what the next cycle retries, so a Telegram failure — or a crash
+        between evaluation and Telegram — can never mark a deal as processed
+        without having notified it.
+
+        The first cycle of a fresh database is not a blind snapshot: it
+        initializes the feed state **and** evaluates what the alerts can prove
+        to be new (see `_record_feed_baseline`).
+        """
+        self.last_summary = RunSummary()
+        self.last_scan_status = SCAN_SUCCESS
+        self.last_scan_error_type = None
+        self.last_scan_stats = None
+        self.last_feed_status = FEED_OK
+        self.last_feed_error_type = None
+        self.last_feed_received = 0
+        self.last_feed_new = 0
+        self.last_feed_oldest_age_seconds = None
+        self.last_feed_overlap = None
+        self.last_feed_window_full = False
+        rules = self._active_rules_with_dates()
+        if not rules:
+            # Nothing can match, so the feed is not fetched at all.
+            self.last_feed_status = FEED_SKIPPED
+            logger.info("feed_cycle_skipped reason=no_active_rules")
+            return 0
+        try:
+            deals = self.feed.latest()
+        except ChollometroError as exc:
+            return self._feed_fallback(pages, exc)
+        deals = _unique_feed_deals(deals)
+        self.last_summary.found = len(deals)
+        self.last_feed_received = len(deals)
+        batch = getattr(self.feed, "last_feed", None)
+        if not self.repository.feed_is_initialized():
+            return self._record_feed_baseline(deals, batch, rules)
+        seen = self.repository.seen_feed_thread_ids([deal.deal_id for deal in deals])
+        new_deals = [deal for deal in deals if deal.deal_id not in seen]
+        self.last_feed_new = len(new_deals)
+        self.last_summary.already_known += len(deals) - len(new_deals)
+        self._log_feed_window(batch, new=len(new_deals), overlap=len(seen))
+        extractor = self.extractor if self.extractor is not None else create_extractor()
+        initial_metrics = dict(getattr(extractor, "metrics", {}))
+        sent = self._deliver_pending_notifications(rules)
+        for deal in new_deals:
+            sent += self._process_feed_deal(deal, rules, extractor, initial_metrics)
+            # Registered as seen after the outcome of every rule is durable:
+            # a crash here simply evaluates the thread again next cycle, and a
+            # failed delivery is retried from its pending observation.
+            self.repository.record_feed_threads([deal])
+        self.repository.set_feed_watermark(
+            batch.newest_published_at if batch is not None else None
+        )
+        self._record_feed_scan_run(
+            deals, new=len(new_deals), sent=sent, status=SCAN_SUCCESS
+        )
+        return sent
+
+    def _record_feed_baseline(self, deals, batch, rules=None):
+        """First cycle ever: initialize the feed, then evaluate what is new.
+
+        The window is the historical reference for everything the alerts cannot
+        prove to be new: a deal published at or before an alert's `created_at`
+        only initializes the seen state and is never announced for that alert.
+        It is **not** a blind snapshot, though: a deal published *after* an
+        alert was created goes through the normal pipeline in this very first
+        cycle (temporal gate -> interest filters -> extraction -> persistence ->
+        Telegram). Without that, every chollo published between the alert and
+        the first daemon cycle would be lost.
+
+        Each thread is registered as seen only after the outcome of every rule
+        is durable, exactly like the steady-state cycle, so a crash mid-cycle
+        only re-evaluates what was not settled yet.
+        """
+        if rules is None:
+            rules = self._active_rules_with_dates()
+        extractor = self.extractor if self.extractor is not None else create_extractor()
+        initial_metrics = dict(getattr(extractor, "metrics", {}))
+        sent = self._deliver_pending_notifications(rules)
+        for deal in deals:
+            sent += self._process_feed_deal(deal, rules, extractor, initial_metrics)
+            self.repository.record_feed_threads([deal])
+        self.repository.mark_feed_initialized()
+        # Every thread of the window is seen for the first time.
+        self.last_feed_new = len(deals)
+        # No history exists yet, so "no overlap" cannot mean anything here.
+        self._log_feed_window(batch, new=len(deals), overlap=None, initialized=False)
+        self.repository.set_feed_watermark(
+            batch.newest_published_at if batch is not None else None
+        )
+        logger.info(
+            "feed_baseline_recorded threads=%s window_limit=%s eligible_sent=%s",
+            len(deals),
+            _window_label(getattr(batch, "window_limit", None)),
+            sent,
+        )
+        self._record_feed_scan_run(
+            deals, new=len(deals), sent=sent, status=SCAN_SUCCESS
+        )
+        return sent
+
+    def _process_feed_deal(self, deal, rules, extractor, initial_metrics):
+        """Evaluate one new feed deal against every active rule."""
+        sent = 0
+        for rule_id, alert_rule, rule, created_at in rules:
+            if not published_after_alert(deal, created_at):
+                # The alert is younger than the deal: it must never announce it.
+                self.last_summary.before_alert += 1
+                continue
+            observation = self.repository.get_rule_observation(rule_id, deal.deal_id)
+            if self._already_settled(observation, deal, created_at):
+                self.last_summary.already_known += 1
+                continue
+            if observation is None and not self.repository.claim_rule_observation(
+                rule_id, deal.deal_id
+            ):
+                continue
+            evaluation = self.evaluator.evaluate(
+                deal, rule, extractor=extractor, persist_extraction=True
+            )
+            self._record_evaluation(evaluation, extractor, initial_metrics)
+            if not evaluation.result.accepted:
+                logger.info(
+                    "deal=%s category=%s result=%s",
+                    deal.deal_id,
+                    evaluation.deal.category,
+                    evaluation.result.reason,
+                )
+                self.repository.record_rule_observation_result(
+                    rule_id, deal.deal_id, False, evaluation.result.reason
+                )
+                self.last_summary.rejected += 1
+                continue
+            self.last_summary.interesting += 1
+            sent += self._deliver(rule_id, evaluation.deal)
+        return sent
+
+    @staticmethod
+    def _already_settled(observation, deal, created_at):
+        """True when a durable verdict already answers this (rule, deal) pair.
+
+        A `matched` value means the pair is done: rejected, delivered, or
+        matched with the delivery owned by the retry pass. A baseline snapshot
+        only covers deals that already existed when the alert was created, so a
+        deal that is provably newer than the alert is still evaluated — the
+        baseline can never hide a new chollo. A claim without a verdict is an
+        interrupted cycle and is evaluated again.
+        """
+        if observation is None:
+            return False
+        if observation[5] is not None:
+            return True
+        if observation[4]:
+            return not published_after_alert(deal, created_at)
+        return False
+
+    def _deliver(self, rule_id, deal):
+        """Persist the match, notify once and record the delivery.
+
+        The match and the observation are written before Telegram, and
+        `notified_at` only after it succeeded. A failure therefore leaves a
+        durable pending state instead of a silently processed deal.
+        """
+        self.repository.record_rule_match(deal.deal_id, rule_id)
+        self.repository.record_rule_observation_result(
+            rule_id, deal.deal_id, True, None
+        )
+        inserted = self.repository.upsert(deal)
+        self.last_summary.new += int(bool(inserted))
+        try:
+            self.notifier.send(deal)
+        except Exception as exc:  # noqa: BLE001 - one delivery must not stop the cycle
+            self.last_summary.errors += 1
+            logger.warning(
+                "telegram_send_failed deal=%s rule_id=%s error=%s",
+                deal.deal_id,
+                rule_id,
+                type(exc).__name__,
+            )
+            self.notify_error(
+                "TELEGRAM_ERROR", "AlertService", f"{type(exc).__name__}: {exc}"
+            )
+            return 0
+        if not getattr(self.notifier, "dry_run", False):
+            self.repository.mark_rule_observation_notified(rule_id, deal.deal_id)
+            self.repository.mark_rule_match_notified(deal.deal_id, rule_id)
+            self.repository.mark_notified(deal.deal_id)
+        self.last_summary.telegram_sent += 1
+        return 1
+
+    def _deliver_pending_notifications(self, rules):
+        """Retry deliveries left pending by an earlier failure in this database."""
+        enabled = {rule_id for rule_id, _rule, _interest, _created in rules}
+        sent = 0
+        for rule_id, deal_id in self.repository.pending_rule_notifications(
+            PENDING_NOTIFICATION_LIMIT
+        ):
+            if rule_id not in enabled:
+                continue
+            deal = self.repository.get_deal(deal_id)
+            if deal is None:
+                # Without the stored deal there is nothing to render; the row
+                # stays pending instead of being marked as delivered.
+                logger.warning(
+                    "feed_pending_deal_missing rule_id=%s deal_id=%s",
+                    rule_id,
+                    deal_id,
+                )
+                continue
+            sent += self._deliver(rule_id, deal)
+        return sent
+
+    def _active_rules_with_dates(self):
+        """Enabled rules with the creation date of each alert."""
+        rules = []
+        for rule_id, alert_rule in self._active_alert_rules():
+            rules.append(
+                (
+                    rule_id,
+                    alert_rule,
+                    self._interest_rule(alert_rule),
+                    self.repository.alert_rule_created_at(rule_id),
+                )
+            )
+        return rules
+
+    def _log_feed_window(self, batch, new, overlap=None, initialized=True):
+        """Record the visibility window and warn only on a real loss signal.
+
+        A saturated window is **not** a risk by itself: the production request
+        omits `limit`, so the endpoint always answers with its full default
+        window (30 threads) and a "full" batch is the normal case. What matters
+        is whether this window overlaps the threads already recorded: a window
+        with threads and **zero** overlap, after a non-empty history, is the
+        sign that the newest threads moved past the window between two cycles.
+        """
+        if batch is None:
+            return
+        age = batch.oldest_age_seconds
+        previous = self.repository.feed_watermark()
+        self.last_feed_oldest_age_seconds = age
+        self.last_feed_overlap = overlap
+        self.last_feed_window_full = bool(batch.window_full)
+        logger.info(
+            "feed_window received=%s new=%s window_limit=%s overlap=%s "
+            "oldest_published_at=%s newest_published_at=%s oldest_age_seconds=%s "
+            "xsrf_present=%s",
+            batch.received,
+            new,
+            _window_label(batch.window_limit),
+            "N/D" if overlap is None else overlap,
+            _isoformat(batch.oldest_published_at),
+            _isoformat(batch.newest_published_at),
+            "N/D" if age is None else f"{age:.0f}",
+            batch.xsrf_present,
+        )
+        if batch.server_window_full:
+            # Informational: the widest available answer came back full.
+            logger.info(
+                "feed_window_saturated window=%s received=%s new=%s",
+                batch.expected_window,
+                batch.received,
+                new,
+            )
+        oldest = batch.oldest_published_at
+        if oldest is not None and previous is not None and oldest > previous:
+            logger.warning(
+                "feed_window_gap previous_newest_published_at=%s "
+                "oldest_published_at=%s gap_seconds=%s",
+                previous.isoformat(),
+                oldest.isoformat(),
+                int((oldest - previous).total_seconds()),
+            )
+        if (
+            initialized
+            and overlap == 0
+            and batch.received > 0
+            and self.repository.feed_thread_count() > 0
+        ):
+            logger.warning(
+                "feed_window_risk reason=no_overlap received=%s new=%s overlap=0 "
+                "window_limit=%s oldest_age_seconds=%s",
+                batch.received,
+                new,
+                _window_label(batch.window_limit),
+                "N/D" if age is None else f"{age:.0f}",
+            )
+
+    def _record_feed_scan_run(
+        self, deals, *, new, sent, status, error_type=None, http_status=None
+    ):
+        """One `scan_runs` row per discovery cycle, with its window metrics."""
+        if not hasattr(self.repository, "record_scan_run"):
+            return
+        self.repository.record_scan_run(
+            FEED_QUERY_LABEL,
+            rule_id=None,
+            fetched_items=len(deals),
+            parsed_items=len(deals),
+            relevant_items=new,
+            matching_items=sent,
+            new_items=new,
+            notifications_sent=sent,
+            http_status=(
+                http_status
+                if http_status is not None
+                else getattr(self.feed, "last_http_status", None)
+            ),
+            status=status,
+            error_type=error_type,
+        )
+
+    def _feed_fallback(self, pages, error):
+        """Degrade to the unchanged HTML scans, loudly but only once per cycle."""
+        self.last_feed_status = FEED_FALLBACK
+        self.last_feed_error_type = error.error_type
+        logger.warning(
+            "feed_fallback provider=chollometro_graphql error_type=%s "
+            "http_status=%s message=%s",
+            error.error_type,
+            error.status_code,
+            error,
+        )
+        self._record_feed_scan_run(
+            (),
+            new=0,
+            sent=0,
+            status=SCAN_FAILED,
+            error_type=error.error_type,
+            http_status=error.status_code,
+        )
+        self.notify_error(error.error_type, FEED_COMPONENT, str(error))
+        return self._run_rule_cycles(pages)
 
     @staticmethod
     def _interest_rule(alert_rule: AlertRule):

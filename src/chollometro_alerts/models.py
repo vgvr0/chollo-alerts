@@ -26,3 +26,7 @@ class Deal:
     source_query: str = ""
     unit_weight_kg: Decimal | None = None
     total_weight_kg: Decimal | None = None
+    # Provider-specific fields the GraphQL feed can supply. They are additive:
+    # the HTML parser leaves them unset and no rule consumes them yet.
+    status: str | None = None
+    is_expired: bool | None = None

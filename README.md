@@ -2,13 +2,13 @@
 
 Smart deal monitoring for [Chollometro](https://www.chollometro.com/) with configurable alert rules, automated product analysis and Telegram notifications.
 
-The application continuously checks public Chollometro searches, detects **new deals**, extracts structured product information and evaluates them against configurable rules before deciding whether an alert should be sent.
+The daemon discovers new deals through Chollometro's **internal GraphQL feed** (the newest threads, fetched once per cycle) and falls back to the public HTML searches when that API cannot be reached. Every unseen deal is then extracted, priced and evaluated against the active alert rules before deciding whether an alert should be sent.
 
 It combines deterministic extraction with optional **LLM-powered analysis using DeepSeek**, while keeping pricing calculations and deal decisions deterministic and reproducible.
 
 ## ✨ Features
 
-* 🔎 **Automated deal monitoring** from public Chollometro searches
+* 🔎 **Automated deal monitoring** through the internal GraphQL feed (one request per cycle), with the public HTML searches kept as fallback
 * 🚨 **Configurable alert rules** for different products and searches
 * 🆕 **New-deal detection** using persistent SQLite state
 * 🧠 **Hybrid product extraction**
@@ -27,39 +27,76 @@ It combines deterministic extraction with optional **LLM-powered analysis using 
 
 ## 🏗️ How it works
 
-```text
-Chollometro Search
-        │
-        ▼
-   HTML Parser
-        │
-        ▼
-  New Deal Detection
-        │
-        ▼
-Product Extraction
-   │           │
-   │           └──► DeepSeek LLM
-   │                (when needed)
-   ▼
-Deterministic Extraction
-        │
-        ▼
-   Pricing Engine
-        │
-        ▼
-   Interest Rules
-        │
-        ▼
-   SQLite State
-        │
-        ▼
- Telegram Alert
+The daemon runs one discovery cycle every `SCAN_INTERVAL_MINUTES` (10 by default): a single GraphQL request, per-`threadId` deduplication, one evaluation per new deal and one Telegram message per accepted match.
+
+```mermaid
+flowchart TD
+    A["Chollometro"] --> B["Pepper GraphQL<br/>POST /graphql · root threads<br/>one request per cycle"]
+    B --> C["Latest threads<br/>JSON: threadId, publishedAt, price, merchant…"]
+    C --> D{"threadId already in feed_threads?"}
+    D -- "yes: already observed" --> E["Dropped"]
+    D -- "no: new deal" --> F["New deals"]
+    F --> H{"published_at after<br/>alert.created_at?"}
+    H -- "no" --> J["Not notified"]
+    H -- "yes" --> I["Deterministic rules<br/>pricing + interest engine"]
+    I --> P["LLM (DeepSeek)<br/>only when the facts are not local"]
+    P --> K["Match persisted<br/>rule_deal_observations + deal_rule_matches"]
+    K --> N["Telegram"]
+    N --> O["notified_at after a successful delivery"]
 ```
 
-The LLM is intentionally limited to **extracting structured facts from the deal**. It does not decide whether a product is a good deal or calculate prices.
+When the GraphQL call fails the cycle degrades to the unchanged HTML provider, per active rule:
+
+```mermaid
+flowchart TD
+    P["GraphQL failure<br/>timeout · HTTP · GraphQL error · parse error"] --> Q["HTML provider<br/>ChollometroClient.recent(query, pages)"]
+    Q --> R["Existing per-rule scan<br/>same semantics as before the feed"]
+    R --> S["Match persisted + Telegram"]
+    P --> T["One operational alert<br/>inside the 60-minute cooldown"]
+```
+
+The LLM is intentionally limited to **extracting structured facts from the deal**. It does not decide whether a product is a good deal and it does not calculate prices.
 
 This separation keeps the decision pipeline deterministic, testable and easier to extend.
+
+## 🔎 GraphQL discovery feed
+
+The discovery path is `POST https://www.chollometro.com/graphql`, using the root
+field `threads` (`ChollometroClient` speaks HTML; `GraphQLFeedClient` speaks
+this API). One request is sent per cycle, it is never executed once per alert,
+and the HTML provider stays available as the fallback.
+
+> ⚠️ **This is an internal, undocumented API.** It is what the site's own
+> front-end uses, not a published developer contract: it can change, require a
+> session or disappear without notice. Treat every field as best-effort and
+> keep the HTML fallback in mind when changing the query.
+
+* **Request shape.** A plain JSON `POST` with `operationName` and `query`, over
+  a persistent `requests.Session` that first does one `GET` of the homepage to
+  obtain the session cookies (a stale session is re-handshaked once). No cookie
+  or token value is ever logged: only booleans such as `xsrf_present`.
+* **Structured data.** The answer is JSON (`data.threads[]`), so no HTML
+  parsing is involved: `threadId`, `title`, `url`, `price`, `nextBestPrice`,
+  `temperature`, `publishedAt`, `status`, `isExpired`,
+  `descriptionPurified(maxLength: 400)`, `merchant`, `groups` and `mainImage`
+  are mapped straight onto the `Deal` model.
+* **Identity is `threadId`**, the same value the HTML parser reads from
+  `article[id="thread_<id>"]`, so `new`/`seen` bookkeeping is shared between
+  both providers and a deal is never announced twice.
+* **`publishedAt`** (epoch seconds, converted to UTC) is the provider timestamp
+  of the deal; it is what the alert window compares against.
+* **Window.** The request deliberately omits `limit`: the endpoint then answers
+  with its widest window (30 threads, newest first). `limit` 1–20 asks for
+  exactly that many; `limit >= 21` is silently clamped to 20 by the server, so
+  `limit: 30` is never sent and a configured value outside 1–20 is rejected at
+  startup.
+* **No pagination.** `threads` accepts only `filter` and `limit`. There is no
+  cursor, `after`/`before`, `first`/`last`, `offset`, `page`, `skip` or
+  `start`, and no `pageInfo`/`hasNextPage`. `threadId: {in: [...]}` does work
+  (it re-reads specific ids); `gt`/`lt`/`ge`/`le` are accepted but ignored and
+  `sort` is accepted but does not change the order, so none of them is used.
+* **Switch**: `CHOLLOMETRO_GRAPHQL_DISCOVERY=false` restores the original
+  HTML-only behaviour and never touches the GraphQL endpoint.
 
 ## 🛡️ Chollometro failure handling
 
@@ -101,33 +138,184 @@ the logs, in the metrics (`SCAN_STATUS`, `SCAN_ERROR_TYPE`) and in the CLI
   60-minute cooldown per error type), so a `503` never becomes alert spam, and no
   "0 chollos encontrados" message is ever sent for a failure.
 
+## ⚙️ Configuration
+
+Everything is read from the environment (`.env` in the project root, loaded on
+start-up). The names and defaults below are the ones the code really uses
+(`config.py`, `cli.py`, `runtime.py`):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | *required* | Bot token used to send alerts. |
+| `TELEGRAM_CHAT_ID` | *required* | Authorised chat that receives them. |
+| `CHOLLOMETRO_GRAPHQL_DISCOVERY` | `true` | Enables the GraphQL discovery feed. `false` keeps the HTML-only behaviour and never touches the endpoint. |
+| `CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT` | unset | Unset = the request sends no `limit` and the endpoint answers with its widest window (30 threads). A value between 1 and 20 asks for that many explicitly. Anything else is rejected at start-up. |
+| `CHOLLOMETRO_GRAPHQL_PATH` | `/graphql` | Endpoint path, relative to the site. |
+| `CHOLLOMETRO_TIMEOUT_SECONDS` | `20` | Timeout of every Chollometro request. |
+| `CHOLLOMETRO_MAX_RETRIES` | `2` | Bounded retry budget (never retries 4xx or parse failures). |
+| `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` | `0.5` | Base of the exponential backoff. |
+| `CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS` | `30` | Backoff cap. |
+| `SCAN_INTERVAL_MINUTES` | `10` | Delay between discovery cycles in `run` (overridden by `--interval-minutes`). |
+| `LLM_ENABLED` | `false` | Enables the DeepSeek extraction fallback. |
+| `LLM_PROVIDER` | `deepseek` | Only supported provider. |
+| `DEEPSEEK_API_KEY` | — | Required when `LLM_ENABLED=true`. |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Model asked for the extraction. |
+| `DEEPSEEK_TIMEOUT_SECONDS` | `20` | LLM request timeout. |
+| `DEEPSEEK_MAX_RETRIES` | `2` | LLM retry budget. |
+| `MILK_*`, `BEER_*` | — | Legacy thresholds of the env-configured rules used by `check`, `baseline` and `run-rules --dry-run`. |
+
+> `ERROR_ALERT_COOLDOWN_MINUTES` appears in `.env.example`, but no code reads it
+> today: the operational-alert cooldown is fixed at 60 minutes in
+> `AlertService.notify_error`. Setting it has no effect.
+
+## ▶️ Running the project
+
+Install it once, in a virtual environment of your choice (the package is a plain
+`setuptools` project that exposes the `chollometro-alerts` entry point):
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate      # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+Create the configuration file from the example and fill in your secrets:
+
+```bash
+cp .env.example .env                # Windows: Copy-Item .env.example .env
+```
+
+`pytest` and `ruff` are the development tools used below; they are **not**
+declared as dependencies of `pyproject.toml`, so install them separately (for
+example `pip install pytest ruff`).
+
+### `check`: one-shot run
+
+```bash
+chollometro-alerts check            # add --dry-run to skip Telegram
+```
+
+`check` is the legacy one-shot path: it performs a single HTML scan of the
+built-in `leche` query with the env-configured rule (`MILK_*`), prints the run
+metrics and exits (exit code `1` when the scan failed, which is what cron and
+monitoring read). It does not use the GraphQL feed. Without `--dry-run` it
+requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+
+### `run`: the daemon
+
+```bash
+chollometro-alerts run                          # every SCAN_INTERVAL_MINUTES
+chollometro-alerts run --interval-minutes 5     # explicit interval
+```
+
+`run` keeps a process alive: it starts the Telegram listener (so alert rules can
+be created and edited from chat) in one thread and runs the discovery cycle
+every `interval_minutes * 60` seconds in the other, until it is interrupted.
+Each cycle is the GraphQL feed + fallback described above.
+
+Other entry points: `baseline`, `run-rules --dry-run`, `alert parse|add|list|test`,
+`telegram-poll`, `telegram-listen` and `test-llm "<text>"`.
+
+## 💾 Persistence
+
+Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
+
+| Table | What it holds |
+| --- | --- |
+| `deals` | The deals already seen, keyed by `deal_id`, with `published_at`, `first_seen_at` and `notified_at`. |
+| `alert_rules` | The persisted alerts: `query`, `product_type`, `brand`, `max_price`, `price_unit`, `enabled`, `state`, `created_at`, `updated_at`. |
+| `feed_threads` | **One row per thread ever seen in the GraphQL feed** (`thread_id` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
+| `feed_state` | Key/value state of the feed: `bootstrap_at` (the database saw its first discovery cycle) and `newest_published_at` (the watermark of the previous cycle). |
+| `rule_deal_observations` | One row per (`rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason and `notified_at`. |
+| `deal_rule_matches` | The accepted (`deal_id`, `rule_id`) pairs and when they were matched and notified. |
+| `product_extractions` | The extraction cache (one JSON payload per deal) that avoids repeated LLM calls. |
+| `scan_runs` | One row per cycle and per HTML scan: counters, timings, HTTP status, `status` and `error_type`. The discovery cycle is recorded as `query='graphql:feed'`. |
+| `telegram_updates` | The Telegram update ids already processed. |
+| `error_alerts` | The operational alerts sent, with their fingerprint and cooldown timestamps. |
+
+`feed_threads` is what makes "only new deals" true: a `threadId` present there is
+never evaluated again, whichever provider saw it first.
+
 ## 🚀 Example
 
-You can define a search such as:
+An alert can be as small as:
 
 ```text
 "cerveza"
 ```
 
-The application establishes the current results as a baseline. On subsequent executions, only newly discovered deals are evaluated.
-
-For each new deal:
+The first discovery cycle on a fresh database **initializes the feed state while still evaluating what the alerts can prove to be new**, so a chollo published between the creation of an alert and the first daemon cycle is never lost. Every deal of every cycle goes through the same pipeline:
 
 ```text
-New Chollometro deal
+New Chollometro thread (threadId not in feed_threads)
         ↓
-Extract product information
+Extract product information (deterministic, LLM only when needed)
         ↓
 Calculate comparable price
         ↓
-Evaluate configured rule
-        ↓
-Match?
-   ├── No  → Store and ignore
-   └── Yes → Send Telegram alert
+published_at > alert.created_at ?
+   ├── No  → never notified for this alert
+   └── Yes → evaluate the rule
+                ├── reject → store the verdict, no notification
+                └── match  → persist the match → Telegram → notified_at
 ```
 
-This makes it possible to monitor products continuously without receiving notifications for deals that already existed when the alert was created.
+This makes it possible to monitor products continuously without ever notifying a deal that already existed when the alert was created.
+
+## ⏱️ When a deal may be notified
+
+An alert is bounded in time: it can only notify deals **strictly newer** than the moment the alert was created.
+
+```text
+deal.published_at > alert.created_at
+```
+
+| Relation | Result |
+| --- | --- |
+| `published_at < created_at` | never notified |
+| `published_at == created_at` | never notified (the comparison is strict) |
+| `published_at > created_at` | evaluated normally |
+
+Both timestamps are compared in UTC: `published_at` comes from the provider (`publishedAt` in GraphQL, the card timestamp in HTML) and `created_at` from the stored rule. A deal **without** a timestamp is never considered "published after": the alert cannot prove it is new, so it stays silent.
+
+**Where the comparison lives.** The GraphQL discovery cycle enforces it directly, per alert (`published_at > alert.created_at`). The HTML fallback cannot: the cards it parses usually carry **no timestamp at all**, so the same user-visible guarantee comes from the **rule baseline** taken when the alert is created — the deals already in the page are claimed and never announced, and a deal that appears afterwards is evaluated. Both paths agree on the outcome (a deal that existed when the alert was created is never announced); the mechanism differs, and both are covered by tests.
+
+The comparison is **per alert**, never one global date: a deal is eligible for the alerts that already existed when it was published, and invisible to the ones created later.
+
+**First discovery cycle (bootstrap).** On a fresh database the first cycle initializes the state of the feed **and** keeps the deals the alerts can prove to be new. The window is the reference for everything older — those deals only initialize the historical state — but a deal published *after* an alert was created is eligible for that alert and goes through the whole pipeline (temporal gate → filters → extraction → persistence → Telegram) in this very first cycle. Anything else would silently lose every chollo published between the creation of the alert and the first daemon cycle. After the cycle, the whole window is registered in `feed_threads`, so the next cycle with the same feed evaluates and notifies nothing again.
+
+```text
+Alert created                10:00
+
+First feed scanned by the daemon
+  A        09:50   published before the alert   recorded as seen, never notified
+  B        10:00   exactly at the alert          recorded as seen, never notified
+  C        10:05   published after the alert     evaluated → matches → Telegram
+  D        10:06   published after the alert     evaluated → rejected, no message
+
+After the cycle   A B C D  registered as seen
+Second cycle, same feed       0 evaluations, 0 notifications
+```
+
+## 🔄 The discovery cycle, step by step
+
+1. **Fetch the feed** — `GraphQLFeedClient.latest()` sends one `POST /graphql` with bounded retries and a single session handshake.
+2. **Identify** every thread by `threadId`.
+3. **Register / deduplicate** — the window itself is deduplicated by `threadId` and compared with `feed_threads`. On the very first cycle every thread is new, so the whole window is recorded (after its per-rule outcome is durable, exactly like any other cycle).
+4. **Select the new deals** — only the threads never recorded before. The first cycle selects the whole window, and the temporal filter of step 6 decides which of those deals an alert can really prove to be new.
+5. **Compare against the active alerts** — every enabled rule of `alert_rules`, all sharing that single fetch.
+6. **Temporal filter** — `published_at > alert.created_at`; otherwise the pair is skipped without being evaluated or notified.
+7. **Deterministic evaluation** — `PricingEngine` and `InterestEngine` decide on prices, quantities, volumes, brands and thresholds.
+8. **LLM only when it corresponds** — DeepSeek is asked only when the local parser cannot produce the facts the rule needs (`LLM_ENABLED=false` keeps the pipeline fully deterministic).
+9. **Persist the match** — `deal_rule_matches` plus the `rule_deal_observations` verdict, written *before* Telegram.
+10. **Telegram** — exactly one message per accepted (deal, rule) pair.
+11. **`notified_at`** — written only after the delivery succeeded.
+
+**If Telegram fails** the match stays durable and the pair is left pending
+(matched, not notified). The next cycle retries it before anything else, from
+the stored deal, even if the deal has already left the provider window. A retry
+can never send a second message for an already-notified pair, and a Telegram
+outage can never mark a deal as processed without having notified it.
 
 ## 🔁 Deterministic rule evaluation
 
@@ -250,3 +438,83 @@ The report distinguishes:
 When `Historical deals available` is 0 the replay says nothing about the rule:
 there were no local deals to replay yet, so **0 matches does not mean the alert is
 broken**.
+
+## ⚠️ Known limitations
+
+### GraphQL is a private API
+
+`POST /graphql` is the site's internal endpoint: undocumented, unversioned and
+not a stable public contract. Fields, arguments or the whole endpoint can change
+— or start requiring a session — without notice. The HTML fallback exists
+precisely for that, and a GraphQL failure never stops the daemon.
+
+### Feed window
+
+The feed is a visibility window, not a complete list: whatever leaves the window
+between two cycles is never seen. Measured against the live endpoint, omitting
+`limit` returns 30 threads, an explicit `limit` of 1–20 returns exactly that
+many, and `limit >= 21` is silently clamped to 20. **These are observations from
+testing, not an official guarantee.** The cycle logs when it detects a risk of
+having missed threads: `feed_window_risk reason=no_overlap` (a window that
+overlaps nothing already recorded, after a non-empty history) and
+`feed_window_gap` (the oldest thread of a cycle is newer than the previous
+watermark). `feed_window_saturated` is informational only: a full window is the
+normal case and by itself proves nothing.
+
+### No known pagination
+
+No reliable pagination was found for `threads`: it accepts only `filter` and
+`limit`, with no cursor, `after`/`before`, `first`/`last`, `offset`, `page`,
+`skip`, `start` or `pageInfo`. The only verified way to read past the newest
+window is to request ids explicitly with `threadId: {in: [...]}`, which requires
+knowing them beforehand; `gt`/`lt`/`ge`/`le` are accepted but ignored and `sort`
+is accepted but does not change the order. A future recovery pass could walk
+descending id windows from the oldest stored `threadId` until it overlaps the
+stored history, but nothing like that is implemented today.
+
+### HTML fallback is not equivalent
+
+The fallback is the original HTML scan, run once per active rule: it only sees
+what each rule asks for, it depends on the page markup, and a partially failed
+scan is recorded as `PARTIAL`. A cycle served by the fallback does not have the
+same coverage as a GraphQL discovery cycle.
+
+### `feed_threads` is never pruned
+
+One row is kept forever for every thread the feed has ever discovered: there is
+no pruning job. Lookups stay cheap (the lookups go through the primary key), but
+the table only grows.
+
+## 🧪 Testing
+
+```bash
+python -m pytest -q
+ruff check .
+ruff format --check .
+```
+
+The suite is offline: the HTTP sessions, the clock and the sleeps are injected,
+so no test touches Chollometro, Telegram or a real backoff. The test count is
+deliberately not hardcoded here.
+
+## 🔐 Security
+
+* `.env` is gitignored; only `.env.example` is versioned. Secrets belong in the
+  environment, never in the repository.
+* The Telegram bot token and the DeepSeek API key are credentials: anyone
+  holding them can read your chat or spend your credits.
+* The GraphQL session cookies are never logged, stored or printed: the cookie
+  values live in memory for the lifetime of the process and the logs carry
+  booleans (`xsrf_present`) only.
+* Logs and operational alerts include error types, messages, titles, prices and
+  ids — never tokens, cookies or credentials. The extraction cache stores
+  product facts, not raw API payloads.
+
+## 📌 Project status
+
+* **GraphQL discovery is implemented and covered by the test suite** (feed
+  client, discovery cycle, window metrics and fallback): it is the default way
+  of finding new deals, not a future experiment.
+* **HTML is kept, not replaced**: it is the controlled fallback when the
+  GraphQL API fails and the complete behaviour when
+  `CHOLLOMETRO_GRAPHQL_DISCOVERY=false`.
