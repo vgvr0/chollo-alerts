@@ -28,20 +28,22 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
 
     listener = threading.Thread(target=listen, name="telegram-listener", daemon=True)
     listener.start()
+    logger.info("daemon.started interval_minutes=%s", interval_minutes)
     try:
         while not stop_event.is_set():
             try:
                 rules = service.repository.list_alert_rules(enabled_only=True)
-                logger.info("scan_started active_rules=%s", len(rules))
+                logger.info(
+                    "scan_started event=scan.started active_rules=%s", len(rules)
+                )
                 service.run_active_rules(pages=pages)
                 # A provider failure is recorded per scan and must never stop
                 # the loop: the next cycle simply tries again.
-                logger.info(
-                    "scan_finished status=%s",
-                    getattr(service, "last_scan_status", SCAN_SUCCESS),
-                )
+                status = getattr(service, "last_scan_status", SCAN_SUCCESS)
+                logger.info("scan_finished status=%s", status)
+                logger.info("scan.completed status=%s", status)
             except Exception:
-                logger.exception("scan_failed")
+                logger.exception("scan_failed event=scan.failed")
             stop_event.wait(interval_minutes * 60)
     finally:
         stop_event.set()

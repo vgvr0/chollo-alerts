@@ -1,6 +1,8 @@
 import argparse
 import logging
 import os
+import signal
+import sqlite3
 import threading
 from time import perf_counter
 
@@ -42,6 +44,25 @@ PRICE_REJECTIONS = {
 }
 
 REPLAY_SAMPLE_SIZE = 10
+
+
+def health_check(path: str) -> int:
+    """Check that the durable SQLite database is readable and writable."""
+    repository = DealRepository(path)
+    try:
+        connection = repository.db
+        if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            print("health.unhealthy database_check_failed")
+            return 1
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+        print(f"health.healthy database={path}")
+        return 0
+    except (OSError, sqlite3.Error) as exc:
+        print(f"health.unhealthy database_error={type(exc).__name__}")
+        return 1
+    finally:
+        repository.close()
 
 
 def report_scan_failure(error: ChollometroError) -> None:
@@ -207,7 +228,7 @@ def main():
     load_dotenv(PROJECT_ROOT / ".env")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser()
-    p.add_argument("--db", default="deals.sqlite3")
+    p.add_argument("--db", default=os.getenv("DATABASE_PATH", "deals.sqlite3"))
     p.add_argument("--pages", type=int, default=1)
     sub = p.add_subparsers(dest="command", required=False)
     baseline = sub.add_parser("baseline")
@@ -218,6 +239,7 @@ def main():
     probe.add_argument("text", help="Texto del producto que se extraerá")
     sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
     sub.add_parser("telegram-listen", help="Escuchar órdenes de Telegram continuamente")
+    sub.add_parser("health", help="Comprobar SQLite y su almacenamiento")
     run_parser = sub.add_parser("run", help="Ejecutar listener y scanner continuamente")
     run_parser.add_argument("--interval-minutes", type=int, default=None)
     rules_parser = sub.add_parser("run-rules", help="Evaluar reglas activas")
@@ -239,6 +261,8 @@ def main():
         help="Máximo de deals históricos a evaluar (0 = sin límite)",
     )
     a = p.parse_args()
+    if a.command == "health":
+        raise SystemExit(health_check(a.db))
     if a.command == "alert":
         repository = DealRepository(a.db)
         if a.alert_command == "list":
@@ -353,6 +377,14 @@ def main():
             service=service,
         )
         stop = threading.Event()
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def request_stop(signum, frame):
+            del signum, frame
+            stop.set()
+            logging.getLogger(__name__).info("daemon.stopping")
+
+        signal.signal(signal.SIGTERM, request_stop)
         try:
             if a.command == "telegram-listen":
                 controller.listen_forever(stop_event=stop)
@@ -363,7 +395,9 @@ def main():
                 run_daemon(controller, service, interval, a.pages, stop)
         except KeyboardInterrupt:
             stop.set()
-            logging.getLogger(__name__).info("shutdown_requested")
+            logging.getLogger(__name__).info("daemon.stopping")
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         return
     if a.command != "baseline" and not getattr(a, "dry_run", False):
         missing = [
