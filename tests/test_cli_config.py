@@ -20,6 +20,7 @@ def cli_env(monkeypatch, tmp_path):
         "DEEPSEEK_TIMEOUT_SECONDS",
         "DEEPSEEK_MAX_RETRIES",
         "PYTHON_DOTENV_DISABLED",
+        "DATABASE_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cli, "PROJECT_ROOT", tmp_path)
@@ -118,6 +119,27 @@ def test_dry_run_without_telegram_credentials(cli_env, monkeypatch, capsys):
     notifier.assert_not_called()
     client.recent.assert_called_once()
     assert "TELEGRAM_SENT=0" in capsys.readouterr().out
+
+
+def test_cli_uses_database_path_environment_default(cli_env, monkeypatch):
+    root, _, _ = cli_env
+    database = root / "data" / "chollometro.sqlite3"
+    repository = Mock()
+    repository.list_alert_rules.return_value = []
+    monkeypatch.setenv("DATABASE_PATH", str(database))
+    paths = []
+
+    def make_repository(path):
+        paths.append(path)
+        return repository
+
+    monkeypatch.setattr(cli, "DealRepository", make_repository)
+    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "alert", "list"])
+
+    cli.main()
+
+    assert paths == [str(database)]
+    assert repository.list_alert_rules.called
 
 
 def test_existing_environment_credentials_take_precedence(cli_env, monkeypatch, capsys):

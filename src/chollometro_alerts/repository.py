@@ -164,6 +164,22 @@ class DealRepository:
         db.execute("""CREATE TABLE IF NOT EXISTS feed_state (
             key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS runtime_status (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            created_at TEXT NOT NULL,
+            daemon_started_at TEXT,
+            daemon_heartbeat_at TEXT,
+            last_scan_run_id TEXT,
+            last_scan_started_at TEXT,
+            last_scan_finished_at TEXT,
+            last_scan_completed_at TEXT,
+            last_scan_failed_at TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error_type TEXT,
+            last_telegram_activity_at TEXT,
+            last_telegram_error_at TEXT,
+            telegram_consecutive_failures INTEGER NOT NULL DEFAULT 0
+        )""")
         db.commit()
 
     def close(self):
@@ -827,8 +843,8 @@ class DealRepository:
     def deal_count(self):
         return self.db.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
 
-    def record_scan_run(self, query, rule_id=None, **metrics):
-        run_id = uuid.uuid4().hex
+    def record_scan_run(self, query, rule_id=None, run_id=None, **metrics):
+        run_id = run_id or uuid.uuid4().hex
         now = datetime.now(UTC).isoformat()
         self.db.execute(
             "INSERT INTO scan_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -851,6 +867,94 @@ class DealRepository:
         )
         self.db.commit()
         return run_id
+
+    def _runtime_row(self):
+        row = self.db.execute("SELECT * FROM runtime_status WHERE id=1").fetchone()
+        if row is None:
+            now = datetime.now(UTC).isoformat()
+            self.db.execute(
+                "INSERT INTO runtime_status(id, created_at) VALUES (1, ?)",
+                (now,),
+            )
+            self.db.commit()
+            row = self.db.execute("SELECT * FROM runtime_status WHERE id=1").fetchone()
+        columns = [
+            column[1] for column in self.db.execute("PRAGMA table_info(runtime_status)")
+        ]
+        return dict(zip(columns, row, strict=True))
+
+    def runtime_status(self):
+        """Return the local daemon status without performing network work."""
+        return self._runtime_row()
+
+    def runtime_daemon_started(self):
+        now = datetime.now(UTC).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            "UPDATE runtime_status SET daemon_started_at=?, daemon_heartbeat_at=? WHERE id=1",
+            (now, now),
+        )
+        self.db.commit()
+
+    def runtime_heartbeat(self):
+        now = datetime.now(UTC).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            "UPDATE runtime_status SET daemon_heartbeat_at=? WHERE id=1", (now,)
+        )
+        self.db.commit()
+
+    def runtime_scan_started(self, run_id=None):
+        now = datetime.now(UTC).isoformat()
+        run_id = run_id or uuid.uuid4().hex
+        self._runtime_row()
+        self.db.execute(
+            """UPDATE runtime_status SET last_scan_run_id=?, last_scan_started_at=?
+            WHERE id=1""",
+            (run_id, now),
+        )
+        self.db.commit()
+        return run_id
+
+    def runtime_scan_finished(self, run_id, status, error_type=None):
+        now = datetime.now(UTC).isoformat()
+        self._runtime_row()
+        if status == "SUCCESS":
+            self.db.execute(
+                """UPDATE runtime_status SET last_scan_run_id=?, last_scan_finished_at=?,
+                last_scan_completed_at=?, consecutive_failures=0, last_error_type=NULL
+                WHERE id=1""",
+                (run_id, now, now),
+            )
+        else:
+            self.db.execute(
+                """UPDATE runtime_status SET last_scan_run_id=?, last_scan_finished_at=?,
+                last_scan_failed_at=?, consecutive_failures=consecutive_failures + 1,
+                last_error_type=? WHERE id=1""",
+                (run_id, now, now, error_type),
+            )
+        self.db.commit()
+
+    def runtime_telegram_activity(self):
+        now = datetime.now(UTC).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            """UPDATE runtime_status SET last_telegram_activity_at=?,
+            telegram_consecutive_failures=0 WHERE id=1""",
+            (now,),
+        )
+        self.db.commit()
+
+    def runtime_telegram_failure(self, error_type="TELEGRAM_POLL_ERROR"):
+        now = datetime.now(UTC).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            """UPDATE runtime_status SET last_telegram_error_at=?,
+            telegram_consecutive_failures=telegram_consecutive_failures + 1,
+            last_error_type=? WHERE id=1""",
+            (now, error_type),
+        )
+        self.db.commit()
 
     def record_rule_match(self, deal_id, rule_id):
         now = datetime.now(UTC).isoformat()

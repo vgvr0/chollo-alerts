@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import signal
 import threading
 from time import perf_counter
 
@@ -17,6 +18,7 @@ from .config import (
 )
 from .errors import SCAN_FAILED, ChollometroError
 from .graphql_feed import GraphQLFeedClient
+from .health import check as health_check
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .models import format_number
@@ -207,13 +209,18 @@ def main():
     load_dotenv(PROJECT_ROOT / ".env")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser()
-    p.add_argument("--db", default="deals.sqlite3")
+    p.add_argument(
+        "--db",
+        default=os.getenv("DATABASE_PATH", "deals.sqlite3"),
+        help="Ruta de SQLite (por defecto DATABASE_PATH o deals.sqlite3)",
+    )
     p.add_argument("--pages", type=int, default=1)
     sub = p.add_subparsers(dest="command", required=False)
     baseline = sub.add_parser("baseline")
     baseline.add_argument("--dry-run", action="store_true")
     check = sub.add_parser("check")
     check.add_argument("--dry-run", action="store_true")
+    sub.add_parser("health", help="Evaluar la salud local del daemon")
     probe = sub.add_parser("test-llm", help="Probar DeepSeek con una sola petición")
     probe.add_argument("text", help="Texto del producto que se extraerá")
     sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
@@ -239,6 +246,8 @@ def main():
         help="Máximo de deals históricos a evaluar (0 = sin límite)",
     )
     a = p.parse_args()
+    if a.command == "health":
+        raise SystemExit(health_check(a.db))
     if a.command == "alert":
         repository = DealRepository(a.db)
         if a.alert_command == "list":
@@ -353,7 +362,16 @@ def main():
             service=service,
         )
         stop = threading.Event()
+        previous_handlers = {}
+
+        def request_shutdown(signum, _frame):
+            logger = logging.getLogger(__name__)
+            logger.info("shutdown_requested signal=%s", signal.Signals(signum).name)
+            stop.set()
+
         try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.signal(signum, request_shutdown)
             if a.command == "telegram-listen":
                 controller.listen_forever(stop_event=stop)
             else:
@@ -362,8 +380,10 @@ def main():
                 )
                 run_daemon(controller, service, interval, a.pages, stop)
         except KeyboardInterrupt:
-            stop.set()
-            logging.getLogger(__name__).info("shutdown_requested")
+            request_shutdown(signal.SIGINT, None)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
         return
     if a.command != "baseline" and not getattr(a, "dry_run", False):
         missing = [

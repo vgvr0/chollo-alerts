@@ -349,6 +349,7 @@ class AlertService:
         self.repository.record_scan_run(
             query,
             rule_id=rule_id,
+            run_id=getattr(self, "runtime_run_id", None),
             fetched_items=stats.get("fetched_items"),
             parsed_items=stats.get("parsed_items"),
             http_status=stats.get("http_status"),
@@ -736,7 +737,7 @@ class AlertService:
             )
             self.last_summary.errors += 1
             logger.warning(
-                "telegram_send_failed deal=%s rule_id=%s error=%s",
+                "telegram.send.failed deal=%s rule_id=%s error=%s",
                 deal.deal_id,
                 rule_id,
                 type(exc).__name__,
@@ -896,6 +897,7 @@ class AlertService:
         self.repository.record_scan_run(
             FEED_QUERY_LABEL,
             rule_id=None,
+            run_id=getattr(self, "runtime_run_id", None),
             fetched_items=len(deals),
             parsed_items=len(deals),
             relevant_items=new,

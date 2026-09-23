@@ -192,6 +192,37 @@ source .venv/Scripts/activate      # Windows PowerShell: .venv\Scripts\Activate.
 pip install -e .
 ```
 
+### Docker
+
+La imagen ejecuta el daemon (`chollometro-alerts run`) como un usuario sin
+privilegios. Copia `.env.example` a `.env` y configura las credenciales en ese
+archivo o en el entorno del proceso; `.env` no se copia dentro de la imagen.
+
+```bash
+docker compose up -d
+docker compose logs -f
+docker compose down
+```
+
+Compose monta `./data` en `/app/data` y configura `DATABASE_PATH` como
+`/app/data/chollometro.sqlite3`, por lo que la SQLite sobrevive a la recreación
+del contenedor. También se puede cambiar `DATABASE_PATH` si se ejecuta la
+imagen directamente.
+
+El estado local se puede consultar sin red:
+
+```bash
+chollometro-alerts health
+docker compose ps
+```
+
+`HEALTHY` indica que la base es accesible y el daemon progresa; `DEGRADED`
+indica errores recientes con progreso todavía observable; `UNHEALTHY` indica
+que la base no está disponible o que el scanner lleva demasiado tiempo sin
+terminar. El umbral por defecto es `max(SCAN_INTERVAL_MINUTES * 3, 15)`
+minutos y admite `HEALTH_STALE_AFTER_MINUTES`; el arranque tiene una gracia de
+`max(SCAN_INTERVAL_MINUTES * 2, 5)` minutos.
+
 Create the configuration file from the example and fill in your secrets:
 
 ```bash
