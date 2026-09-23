@@ -102,6 +102,34 @@ def _non_negative_int(name, default):
     return value
 
 
+# Minutes between two operational alerts of the same kind (per error type and
+# component). Documented in `.env.example` since the beginning; read from the
+# environment here so the operator can actually change it.
+ERROR_ALERT_COOLDOWN_ENV = "ERROR_ALERT_COOLDOWN_MINUTES"
+DEFAULT_ERROR_ALERT_COOLDOWN_MINUTES = 60
+
+
+def error_alert_cooldown_minutes() -> int:
+    """Cooldown of the operational alerts, in minutes (60 by default).
+
+    Zero would turn every failure into its own alert, which is exactly the
+    spam the cooldown exists to prevent, so the minimum is one minute.
+    """
+    load_project_dotenv()
+    try:
+        value = int(
+            os.getenv(ERROR_ALERT_COOLDOWN_ENV, "")
+            or DEFAULT_ERROR_ALERT_COOLDOWN_MINUTES
+        )
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"{ERROR_ALERT_COOLDOWN_ENV} debe ser un entero"
+        ) from exc
+    if value < 1:
+        raise ConfigurationError(f"{ERROR_ALERT_COOLDOWN_ENV} debe ser >= 1")
+    return value
+
+
 @dataclass(frozen=True)
 class ChollometroSettings:
     """Centralised HTTP policy for every request to Chollometro.
