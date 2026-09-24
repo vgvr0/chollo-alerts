@@ -59,6 +59,7 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
         min_volume_l=constraints.min_volume_l,
         temperature_min=constraints.temperature_min,
         temperature_max=constraints.temperature_max,
+        query=alert_rule.query,
     )
 
 

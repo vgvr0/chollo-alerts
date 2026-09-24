@@ -136,6 +136,8 @@ def format_listing_line(row, rule) -> str:
     temperature = listing_temperature_line(display_rule.constraints)
     if temperature:
         lines.append(temperature)
+    if not price and not temperature:
+        lines.append("🔎 Cualquier oferta nueva")
     if display_rule.include_merchants:
         lines.append(f"🏪 {', '.join(display_rule.include_merchants)}")
     if display_rule.exclude_merchants:
@@ -595,6 +597,8 @@ class TelegramRuleController:
             reply = f"✅ {verb}: {subject}"
             if conditions:
                 reply += " " + " y ".join(conditions)
+            elif intent.action == "create":
+                reply += "\n🔎 Cualquier oferta nueva relevante"
             details = alert_detail_lines(intent)
             if details:
                 reply += "\n" + "\n".join(details)
