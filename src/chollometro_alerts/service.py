@@ -1,13 +1,17 @@
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from .alert_rule import AlertRule
-from .config import InterestRule, error_alert_cooldown_minutes
+from .config import (
+    InterestRule,
+    TemperatureMomentumSettings,
+    error_alert_cooldown_minutes,
+)
 from .errors import SCAN_FAILED, SCAN_PARTIAL, SCAN_SUCCESS, ChollometroError
 from .evaluation import DealEvaluator, MatchEvidence, interest_rule_from_alert
-from .filters import InterestEngine, category_for
+from .filters import FilterResult, InterestEngine, category_for
 from .llm import ProductExtractor, create_extractor
 from .pricing import PricingEngine
 from .repository import (
@@ -16,6 +20,7 @@ from .repository import (
     as_utc,
 )
 from .schedule import window_from_alert_rule
+from .temperature_momentum import calculate_momentum, recent_deal, threshold_transition
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +117,9 @@ class RunSummary:
     # deliveries that are still outside their window. Neither is an error.
     deferred: int = 0
     pending_waiting: int = 0
+    temperature_snapshots: int = 0
+    momentum_evaluations: int = 0
+    momentum_alerts: int = 0
 
     def format_metrics(self) -> str:
         fields = (
@@ -158,6 +166,7 @@ class AlertService:
         # Cooldown of the operational alerts, read once from the environment
         # (`ERROR_ALERT_COOLDOWN_MINUTES`, 60 minutes by default).
         self.error_cooldown_minutes = error_alert_cooldown_minutes()
+        self.momentum_settings = TemperatureMomentumSettings.from_env()
         self.pricing = PricingEngine()
         self.interest = InterestEngine()
         self.evaluator = DealEvaluator(self.repository, self.pricing, self.interest)
@@ -224,6 +233,7 @@ class AlertService:
             if status == SCAN_FAILED:
                 self._record_scan_run(rule_id, query, dry_run, len(deals))
                 return [] if dry_run else 0
+        self._observe_temperature_momentum(deals)
         # One row per scan, with the status and the failing HTTP status when the
         # scan did not complete.
         self._record_scan_run(rule_id, query, dry_run, len(deals))
@@ -280,7 +290,10 @@ class AlertService:
             # Evidence of what really produced the match: the alert, the method
             # and every condition the engine checked.
             evidence = evaluation.evidence(
-                rule_id=rule_id, alert_text=alert_text, query=query
+                rule_id=rule_id,
+                alert_text=alert_text,
+                query=query,
+                momentum=self._momentum_evidence(self._momentum_for(deal), rule),
             )
             if rule_id is not None and hasattr(self.repository, "record_rule_match"):
                 self.repository.record_rule_match(deal.deal_id, rule_id)
@@ -553,6 +566,7 @@ class AlertService:
             return self._feed_fallback(pages, exc)
         deals = _unique_feed_deals(deals)
         self.last_summary.found = len(deals)
+        self._observe_temperature_momentum(deals)
         self.last_feed_received = len(deals)
         batch = getattr(self.feed, "last_feed", None)
         if not self.repository.feed_is_initialized():
@@ -641,6 +655,26 @@ class AlertService:
             evaluation = self.evaluator.evaluate(
                 deal, rule, extractor=extractor, persist_extraction=True
             )
+            momentum = self._momentum_for(deal)
+            if evaluation.result.accepted and rule.momentum_enabled:
+                velocity = (
+                    momentum.velocity_for(rule.momentum_window_minutes)
+                    if momentum
+                    else None
+                )
+                if velocity is None or velocity < rule.minimum_temperature_velocity:
+                    evaluation = evaluation.__class__(
+                        evaluation.deal,
+                        evaluation.extraction,
+                        evaluation.rule,
+                        FilterResult(
+                            False,
+                            "REJECTED_TEMPERATURE_MOMENTUM",
+                            evaluation.result.checks,
+                        ),
+                        evaluation.known,
+                        evaluation.from_cache,
+                    )
             self._record_evaluation(evaluation, extractor, initial_metrics)
             if not evaluation.result.accepted:
                 logger.info(
@@ -660,11 +694,85 @@ class AlertService:
                 rule_id,
                 evaluation.deal,
                 evaluation.evidence(
-                    rule_id=rule_id, alert_text=alert_text, query=alert_rule.query
+                    rule_id=rule_id,
+                    alert_text=alert_text,
+                    query=alert_rule.query,
+                    momentum=self._momentum_evidence(momentum, rule),
                 ),
                 window=window,
             )
         return sent
+
+    def _momentum_for(self, deal):
+        if not hasattr(self.repository, "temperature_snapshots"):
+            return None
+        snapshots = self.repository.temperature_snapshots(
+            deal.deal_id, self._clock() - timedelta(minutes=60)
+        )
+        return calculate_momentum(
+            snapshots, self._clock(), published_at=deal.published_at
+        )
+
+    @staticmethod
+    def _momentum_evidence(momentum, rule):
+        if momentum is None or not rule.momentum_enabled:
+            return None
+        velocity = momentum.velocity_for(rule.momentum_window_minutes)
+        return {
+            "current_temperature": momentum.current_temperature,
+            "window_minutes": rule.momentum_window_minutes,
+            "velocity": velocity,
+            "minimum_velocity": rule.minimum_temperature_velocity,
+            "age_minutes": momentum.age_minutes,
+            "reason": (
+                f"temperature velocity >= {rule.minimum_temperature_velocity} °/min"
+            ),
+        }
+
+    def _observe_temperature_momentum(self, deals):
+        """Record recent provider observations and evaluate transitions.
+
+        Detection is always deterministic and is independent of the LLM. The
+        opt-in flag controls threshold state/alert candidates; snapshots are
+        still recorded when disabled so enabling it does not start empty.
+        """
+        now = self._clock()
+        settings = self.momentum_settings
+        if not hasattr(self.repository, "record_temperature_snapshot"):
+            return
+        for deal in deals:
+            if deal.temperature is None or not recent_deal(
+                deal, now, settings.max_age_hours
+            ):
+                continue
+            inserted = self.repository.record_temperature_snapshot(
+                deal.deal_id, deal.temperature, now
+            )
+            self.last_summary.temperature_snapshots += int(inserted)
+            since = now - timedelta(minutes=60)
+            snapshots = self.repository.temperature_snapshots(deal.deal_id, since)
+            momentum = calculate_momentum(
+                snapshots, now, published_at=deal.published_at
+            )
+            if momentum is None:
+                continue
+            self.last_summary.momentum_evaluations += 1
+            if not settings.enabled:
+                continue
+            velocity = momentum.velocity_for(settings.window_minutes)
+            was_above = self.repository.temperature_momentum_above(deal.deal_id)
+            above, should_alert = threshold_transition(
+                was_above,
+                velocity,
+                trigger=settings.minimum_velocity,
+                reset=settings.reset_velocity,
+            )
+            if should_alert:
+                self.last_summary.momentum_alerts += 1
+            self.repository.set_temperature_momentum_above(deal.deal_id, above)
+        cleanup = getattr(self.repository, "reset_old_temperature_snapshots", None)
+        if cleanup is not None:
+            cleanup(now - timedelta(hours=settings.retention_hours))
 
     @staticmethod
     def _already_settled(observation, deal, created_at):

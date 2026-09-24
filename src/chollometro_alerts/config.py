@@ -153,6 +153,41 @@ class ChollometroSettings:
         return cls(timeout, retries, backoff, max_backoff)
 
 
+@dataclass(frozen=True)
+class TemperatureMomentumSettings:
+    """Opt-in policy for the isolated temperature momentum feature."""
+
+    enabled: bool = False
+    max_age_hours: float = 3.0
+    window_minutes: int = 15
+    minimum_velocity: float = 3.0
+    reset_velocity: float = 2.0
+    retention_hours: float = 24.0
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        raw = os.getenv("TEMPERATURE_MOMENTUM_ENABLED", "false").strip().casefold()
+        if raw not in {"true", "false"}:
+            raise ConfigurationError(
+                "TEMPERATURE_MOMENTUM_ENABLED debe ser true o false"
+            )
+        age = _float("TEMPERATURE_MOMENTUM_MAX_AGE_HOURS", 3.0)
+        window = _non_negative_int("TEMPERATURE_MOMENTUM_WINDOW_MINUTES", 15)
+        if window not in {5, 15, 30, 60}:
+            raise ConfigurationError(
+                "TEMPERATURE_MOMENTUM_WINDOW_MINUTES debe ser 5, 15, 30 o 60"
+            )
+        minimum = _float("TEMPERATURE_MOMENTUM_MIN_VELOCITY", 3.0)
+        reset = _float("TEMPERATURE_MOMENTUM_RESET_VELOCITY", 2.0)
+        retention = _float("TEMPERATURE_MOMENTUM_RETENTION_HOURS", 24.0)
+        if reset >= minimum:
+            raise ConfigurationError(
+                "TEMPERATURE_MOMENTUM_RESET_VELOCITY debe ser menor que el umbral"
+            )
+        return cls(raw == "true", age, window, minimum, reset, retention)
+
+
 # Window behaviour of `threads(filter: {}, limit: N)`, measured against the live
 # endpoint (2026-09-23):
 #
@@ -251,6 +286,9 @@ class InterestRule:
     category_include: tuple[str, ...] = ()
     category_exclude: tuple[str, ...] = ()
     max_age_minutes: float | None = None
+    momentum_enabled: bool = False
+    momentum_window_minutes: int = 15
+    minimum_temperature_velocity: float = 3.0
 
 
 _INTEREST_RULE_ALIASES = {"min_temperature": "temperature_min"}

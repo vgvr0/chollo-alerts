@@ -63,6 +63,9 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
         category_include=constraints.category_include,
         category_exclude=constraints.category_exclude,
         max_age_minutes=constraints.max_age_minutes,
+        momentum_enabled=alert_rule.momentum_enabled,
+        momentum_window_minutes=alert_rule.momentum_window_minutes,
+        minimum_temperature_velocity=alert_rule.minimum_temperature_velocity,
     )
 
 
@@ -82,6 +85,7 @@ class MatchEvidence:
     method: str
     checks: tuple[ConditionCheck, ...] = ()
     semantic_reason: str | None = None
+    momentum: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -91,6 +95,7 @@ class MatchEvidence:
             "method": self.method,
             "checks": [check.as_dict() for check in self.checks],
             "semantic_reason": self.semantic_reason,
+            "momentum": self.momentum,
         }
 
     @classmethod
@@ -113,6 +118,9 @@ class MatchEvidence:
             method=method if method in MATCH_METHODS else "deterministic",
             checks=checks,
             semantic_reason=payload.get("semantic_reason") or None,
+            momentum=payload.get("momentum")
+            if isinstance(payload.get("momentum"), dict)
+            else None,
         )
 
 
@@ -133,13 +141,22 @@ class DealEvaluation:
         source = getattr(self.extraction, "extraction_source", "deterministic")
         return source if source in MATCH_METHODS else "deterministic"
 
-    def evidence(self, *, rule_id=None, alert_text=None, query=None) -> MatchEvidence:
+    def evidence(
+        self, *, rule_id=None, alert_text=None, query=None, momentum=None
+    ) -> MatchEvidence:
         """Render-ready evidence of this evaluation, scoped to one alert."""
-        return build_evidence(self, rule_id=rule_id, alert_text=alert_text, query=query)
+        return build_evidence(
+            self, rule_id=rule_id, alert_text=alert_text, query=query, momentum=momentum
+        )
 
 
 def build_evidence(
-    evaluation: DealEvaluation, *, rule_id=None, alert_text=None, query=None
+    evaluation: DealEvaluation,
+    *,
+    rule_id=None,
+    alert_text=None,
+    query=None,
+    momentum=None,
 ) -> MatchEvidence:
     """Package an accepted evaluation as alert-scoped, render-ready evidence.
 
@@ -155,6 +172,7 @@ def build_evidence(
         method=evaluation.method,
         checks=evaluation.result.checks,
         semantic_reason=semantic_reason(evaluation),
+        momentum=momentum,
     )
 
 
