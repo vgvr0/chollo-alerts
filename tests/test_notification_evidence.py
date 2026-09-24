@@ -6,7 +6,7 @@ inferred: a fact the rule could not prove produces no line, and a `generic`
 deal is never a wildcard.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import test_graphql_discovery as discovery
@@ -116,7 +116,7 @@ def conditions(deal, extraction, rule):
 
 
 def test_a_deterministic_match_names_the_alert_and_the_conditions_it_checked():
-    deal = despertador()
+    deal = despertador(published_at=datetime(2026, 9, 24, 9, 17, 7, tzinfo=UTC))
     extraction = ProductExtraction(
         product_type="despertador", extraction_source="deterministic"
     )
@@ -141,6 +141,7 @@ def test_a_deterministic_match_names_the_alert_and_the_conditions_it_checked():
         "💰 Precio: 7,95 €\n"
         "🏪 Tienda: Action\n"
         "🔥 Temperatura: 90°\n"
+        "🕒 Publicado: 11:17\n"
         "\n"
         "🎯 Alerta:\n"
         '"Despertadores por menos de 15 €"\n'
@@ -153,6 +154,25 @@ def test_a_deterministic_match_names_the_alert_and_the_conditions_it_checked():
         "\n"
         f"{deal.url}"
     )
+
+
+def test_publication_time_converts_summer_utc_to_madrid():
+    deal = despertador(published_at=datetime(2026, 9, 24, 9, 17, 7, tzinfo=UTC))
+
+    assert "🕒 Publicado: 11:17" in format_message(deal)
+    assert ":17:07" not in format_message(deal)
+
+
+def test_publication_time_converts_winter_utc_to_madrid():
+    deal = despertador(published_at=datetime(2026, 1, 15, 9, 17, 7, tzinfo=UTC))
+
+    assert "🕒 Publicado: 10:17" in format_message(deal)
+
+
+def test_missing_publication_time_omits_the_line():
+    message = format_message(despertador(published_at=None))
+
+    assert "🕒 Publicado:" not in message
 
 
 def test_a_bare_message_still_names_the_deal_without_inventing_anything():
@@ -477,7 +497,9 @@ def test_a_retried_notification_keeps_the_original_explanation(tmp_path):
     assert service.run_active_rules() == 1
 
     assert notifier.evidences[0] == MatchEvidence.from_dict(stored)
+    assert repository.get_deal(deal.deal_id).published_at == deal.published_at
     assert notifier.messages[0] == format_message(deal, notifier.evidences[0])
+    assert "🕒 Publicado: 14:02" in notifier.messages[0]
     assert '"despertador"' in notifier.messages[0]
     assert "• Precio máximo: 7,95 € < 15 €" in notifier.messages[0]
     assert (
