@@ -247,6 +247,7 @@ class InterestRule:
     min_volume_l: Decimal | None = None
     product_type: str | None = None
     brand: str | None = None
+    query: str | None = None
 
 
 _INTEREST_RULE_ALIASES = {"min_temperature": "temperature_min"}

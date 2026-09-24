@@ -8,7 +8,7 @@ from .merchants import (
     merchant_verdict,
 )
 from .models import Deal, format_amount, format_number
-from .product import product_type_matches
+from .product import product_tokens, product_type_matches
 
 MILK = ("leche", "central lechera asturiana", "puleva", "pascual", "kaiku")
 BEER = (
@@ -109,6 +109,40 @@ def merchant_decision(
     return verdict, tuple(checks)
 
 
+def query_matches(query: str, deal: Deal) -> bool:
+    """Conservative lexical relevance for an alert without structured facts."""
+    expected = product_tokens(query)
+    actual = product_tokens(
+        " ".join(part for part in (deal.title, deal.product_text) if part)
+    )
+    if not expected or len(actual) < len(expected):
+        return False
+    return any(
+        actual[index : index + len(expected)] == expected
+        for index in range(len(actual) - len(expected) + 1)
+    )
+
+
+_GENERIC_QUERY_WORDS = frozenset(
+    {
+        "cerveza",
+        "leche",
+        "móvil",
+        "móviles",
+        "movil",
+        "moviles",
+        "oferta",
+        "ofertas",
+        "portátil",
+        "portátiles",
+        "portatil",
+        "portatiles",
+        "zapatilla",
+        "zapatillas",
+    }
+)
+
+
 def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
     """Decide one deal and keep the evidence of everything it really checked."""
     text = deal.title.casefold()
@@ -135,6 +169,36 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
             return verdict(False, "REJECTED_BRAND")
         checks.append(
             ConditionCheck("BRAND", "Marca", f"«{rule.brand}» (detectada: «{brand}»)")
+        )
+    relevance_only = (
+        rule.max_price is None
+        and rule.max_price_per_liter is None
+        and rule.max_price_per_kilogram is None
+        and rule.max_price_per_unit is None
+        and rule.min_quantity is None
+        and rule.min_volume_l is None
+        and rule.temperature_min is None
+        and rule.temperature_max is None
+    )
+    specific_query = rule.query and (
+        len(product_tokens(rule.query)) > 1
+        or rule.query.casefold() not in _GENERIC_QUERY_WORDS
+    )
+    if (
+        relevance_only
+        and not rule.product_type
+        and not rule.brand
+        and rule.query is not None
+        and specific_query
+    ):
+        if not query_matches(rule.query, deal):
+            return verdict(False, "REJECTED_RELEVANCE")
+        checks.append(
+            ConditionCheck(
+                "RELEVANCE",
+                "Producto/marca relevante",
+                f"«{rule.query}» aparece en el producto",
+            )
         )
     if rule.exclude_keywords:
         if any(k in text for k in rule.exclude_keywords):

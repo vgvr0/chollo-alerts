@@ -6,6 +6,64 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .alert_rule import AlertConstraints, AlertRule, NotificationWindow
 from .schedule import default_timezone, parse_time, validate_timezone
 
+_GENERIC_ALERT_TERMS = frozenset(
+    {
+        "algo",
+        "barato",
+        "baratas",
+        "baratos",
+        "cerveza",
+        "chollo",
+        "chollos",
+        "cosa",
+        "cosas",
+        "interesante",
+        "leche",
+        "móvil",
+        "móviles",
+        "movil",
+        "moviles",
+        "oferta",
+        "ofertas",
+        "portátil",
+        "portátiles",
+        "portatil",
+        "portatiles",
+        "producto",
+        "productos",
+        "quiero",
+        "recomendaciones",
+        "recomiéndame",
+        "recomiendame",
+        "ropa",
+        "saber",
+        "zapatilla",
+        "zapatillas",
+    }
+)
+
+
+def has_specific_relevance(intent: "AlertIntent") -> bool:
+    """Return whether the intent names a useful product, brand, or concept."""
+    if intent.brand and intent.brand.casefold() not in _GENERIC_ALERT_TERMS:
+        return True
+    if (
+        intent.product_type
+        and intent.product_type.casefold() not in _GENERIC_ALERT_TERMS
+    ):
+        return True
+    values = [intent.query, intent.product_type, intent.brand]
+    tokens = [
+        token.casefold()
+        for value in values
+        if value
+        for token in value.split()
+        if token.casefold() not in _GENERIC_ALERT_TERMS
+    ]
+    return bool(tokens) and (
+        len(tokens) >= 2 or bool(intent.brand or intent.product_type)
+    )
+
 
 class AlertIntent(BaseModel):
     """Operational Telegram intent.
@@ -155,12 +213,16 @@ def validate_intent(intent: AlertIntent) -> AlertIntent:
         return intent
     if not (intent.query or intent.product_type or intent.brand):
         raise ValueError("Falta el producto o la marca")
-    if intent.action in {"create", "update"} and not (
-        intent.has_price or intent.has_temperature
+    if (intent.max_price is not None) != (intent.price_unit is not None):
+        raise ValueError("Falta el precio máximo y su unidad")
+    if (intent.has_price or intent.has_temperature) and (
+        intent.query or intent.product_type or intent.brand
     ):
-        # A price is no longer the only possible condition: an alert that only
-        # filters by Chollometro temperature is just as complete.
-        raise ValueError("Falta el precio máximo y su unidad o una temperatura")
+        return intent
+    if not has_specific_relevance(intent):
+        raise ValueError(
+            "Falta un producto, marca o concepto suficientemente específico"
+        )
     return intent
 
 
