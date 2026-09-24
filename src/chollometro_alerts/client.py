@@ -102,6 +102,23 @@ class ChollometroClient:
         }
         return page_result.deals
 
+    def feed_page(self, page: int = 1):
+        """Fetch one public chronological ``/nuevos`` page.
+
+        This is intentionally separate from ``recent``: the normal HTML
+        provider remains query-based, while GraphQL gap recovery uses this
+        endpoint only after a continuity-loss signal.
+        """
+        page_result, http_status = self._fetch_page_url("/nuevos", page)
+        self.last_search = {
+            "query": "__feed__",
+            "page": page,
+            "http_status": http_status,
+            "fetched_items": page_result.items_found,
+            "parsed_items": len(page_result.deals),
+        }
+        return page_result.deals
+
     def recent(self, queries: list[str], pages: int = 1):
         """Fetch the requested pages, recording a `ScanOutcome` in `last_scan`.
 
@@ -154,7 +171,15 @@ class ChollometroClient:
         params: dict[str, str | int] = {"q": query}
         if page > 1:
             params["page"] = page
-        url = f"{self.base_url}/search?{urlencode(params)}"
+        return self._fetch_url(f"/search?{urlencode(params)}", query, page)
+
+    def _fetch_page_url(self, path: str, page: int):
+        params = {"page": page} if page > 1 else {}
+        suffix = f"?{urlencode(params)}" if params else ""
+        return self._fetch_url(f"{path}{suffix}", "", page)
+
+    def _fetch_url(self, path: str, query: str, page: int):
+        url = f"{self.base_url}{path}"
         for attempt in range(1, self.retries + 2):
             response = None
             try:
