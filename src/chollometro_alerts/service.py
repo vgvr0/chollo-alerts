@@ -35,6 +35,13 @@ FEED_OK = "OK"
 FEED_SKIPPED = "SKIPPED"
 FEED_FALLBACK = "FALLBACK"
 
+GAP_NO_GAP = "NO_GAP"
+GAP_DETECTED = "GAP_DETECTED"
+GAP_RECOVERING = "GAP_RECOVERING"
+GAP_RECOVERED = "GAP_RECOVERED"
+GAP_RECOVERY_INCOMPLETE = "GAP_RECOVERY_INCOMPLETE"
+GAP_RECOVERY_FAILED = "GAP_RECOVERY_FAILED"
+
 # One row per discovery cycle in `scan_runs`; the HTML path keeps its own rows.
 FEED_QUERY_LABEL = "graphql:feed"
 
@@ -83,6 +90,16 @@ def _unique_feed_deals(deals):
         seen.add(deal.deal_id)
         unique.append(deal)
     return unique
+
+
+def _ordered_deals(deals):
+    """Newest-first ordering without using the non-monotonic thread id."""
+    oldest = datetime.min.replace(tzinfo=UTC)
+    return sorted(
+        _unique_feed_deals(deals),
+        key=lambda deal: deal.published_at or oldest,
+        reverse=True,
+    )
 
 
 def worst_scan_status(statuses):
@@ -189,6 +206,21 @@ class AlertService:
         # cycle actually acts on (a saturated window alone means nothing).
         self.last_feed_overlap = None
         self.last_feed_window_full = False
+        self.last_gap_recovery = {
+            "status": GAP_NO_GAP,
+            "pages": 0,
+            "deals": 0,
+            "boundary_found": False,
+            "at": None,
+        }
+        self.gap_recovery_metrics = {
+            "gap_recovery_attempts_total": 0,
+            "gap_recovery_recovered_total": 0,
+            "gap_recovery_incomplete_total": 0,
+            "gap_recovery_failures_total": 0,
+            "gap_recovery_pages_total": 0,
+            "gap_recovery_deals_total": 0,
+        }
 
     def run(self, queries, pages=1, rules=None):
         # Static/check mode is kept for compatibility; the daemon never enters
@@ -449,6 +481,8 @@ class AlertService:
             "deals_seen": summary.found,
             "deals_matched": summary.interesting,
             "notifications_sent": summary.telegram_sent,
+            "gap_recovery": dict(self.last_gap_recovery),
+            "gap_recovery_metrics": dict(self.gap_recovery_metrics),
         }
 
     def _run_rule_cycles(self, pages=1):
@@ -576,6 +610,38 @@ class AlertService:
         self.last_feed_new = len(new_deals)
         self.last_summary.already_known += len(deals) - len(new_deals)
         self._log_feed_window(batch, new=len(new_deals), overlap=len(seen))
+        recovered_deals = []
+        previous_watermark = self.repository.feed_watermark()
+        watermark_gap = bool(
+            batch is not None
+            and batch.oldest_published_at is not None
+            and previous_watermark is not None
+            and batch.oldest_published_at > previous_watermark
+        )
+        if overlap_is_gap := (
+            len(deals) > 0
+            and self.repository.feed_thread_count() > 0
+            and (len(seen) == 0 or watermark_gap)
+        ):
+            known_history = self.repository.seen_feed_thread_ids()
+            recovered_deals = self._recover_feed_gap(
+                excluded_ids={deal.deal_id for deal in deals} | known_history,
+                known_ids=known_history,
+            )
+        elif not overlap_is_gap:
+            self.last_gap_recovery = {
+                "status": GAP_NO_GAP,
+                "pages": 0,
+                "deals": 0,
+                "boundary_found": False,
+                "at": self._clock().isoformat(),
+            }
+        if recovered_deals:
+            self._observe_temperature_momentum(recovered_deals)
+            new_deals = _ordered_deals(new_deals + recovered_deals)
+            self.last_feed_new = len(new_deals)
+            self.last_summary.found += len(recovered_deals)
+        discovered_deals = _unique_feed_deals(deals + recovered_deals)
         extractor = self.extractor if self.extractor is not None else create_extractor()
         initial_metrics = dict(getattr(extractor, "metrics", {}))
         sent = self._deliver_pending_notifications(rules)
@@ -588,10 +654,124 @@ class AlertService:
         self.repository.set_feed_watermark(
             batch.newest_published_at if batch is not None else None
         )
+        recovery_status = self.last_gap_recovery["status"]
+        scan_status = SCAN_SUCCESS
+        recovery_error = None
+        if recovery_status in {GAP_RECOVERY_INCOMPLETE, GAP_RECOVERY_FAILED}:
+            scan_status = SCAN_PARTIAL
+            recovery_error = recovery_status
+            self.last_scan_status = SCAN_PARTIAL
+            self.last_scan_error_type = recovery_status
         self._record_feed_scan_run(
-            deals, new=len(new_deals), sent=sent, status=SCAN_SUCCESS
+            discovered_deals,
+            new=len(new_deals),
+            sent=sent,
+            status=scan_status,
+            error_type=recovery_error,
         )
         return sent
+
+    def _recover_feed_gap(self, *, excluded_ids, known_ids):
+        """Recover older pages only after a mature continuity-loss signal."""
+        settings = getattr(self.feed, "feed_settings", None)
+        enabled = bool(getattr(settings, "gap_recovery_enabled", False))
+        max_pages = int(getattr(settings, "gap_recovery_max_pages", 5))
+        now = self._clock().isoformat()
+        self.last_gap_recovery = {
+            "status": GAP_DETECTED,
+            "pages": 0,
+            "deals": 0,
+            "boundary_found": False,
+            "at": now,
+        }
+        if not enabled:
+            logger.info("gap_recovery.disabled max_pages=%s", max_pages)
+            return []
+        self.gap_recovery_metrics["gap_recovery_attempts_total"] += 1
+        self.last_gap_recovery["status"] = GAP_RECOVERING
+        logger.warning(
+            "gap_recovery.started max_pages=%s known_threads=%s",
+            max_pages,
+            len(known_ids),
+        )
+        recovered = {}
+        pages = 0
+        try:
+            for page in range(1, max_pages + 1):
+                deals = self.client.feed_page(page)
+                pages += 1
+                self.gap_recovery_metrics["gap_recovery_pages_total"] += 1
+                page_ids = {deal.deal_id for deal in deals}
+                boundary = bool(page_ids & known_ids)
+                for deal in deals:
+                    if deal.deal_id not in excluded_ids:
+                        recovered.setdefault(deal.deal_id, deal)
+                logger.info(
+                    "gap_recovery.page_fetched page=%s deals=%s new=%s overlap=%s max_pages=%s",
+                    page,
+                    len(deals),
+                    len([deal for deal in deals if deal.deal_id not in excluded_ids]),
+                    len(page_ids & known_ids),
+                    max_pages,
+                )
+                if boundary:
+                    ordered = _ordered_deals(list(recovered.values()))
+                    self.gap_recovery_metrics["gap_recovery_recovered_total"] += 1
+                    self.gap_recovery_metrics["gap_recovery_deals_total"] += len(
+                        ordered
+                    )
+                    self.last_gap_recovery = {
+                        "status": GAP_RECOVERED,
+                        "pages": pages,
+                        "deals": len(ordered),
+                        "boundary_found": True,
+                        "at": self._clock().isoformat(),
+                    }
+                    logger.info(
+                        "gap_recovery.boundary_found page=%s overlap=%s",
+                        page,
+                        len(page_ids & known_ids),
+                    )
+                    logger.info(
+                        "gap_recovery.completed status=%s pages=%s deals=%s",
+                        GAP_RECOVERED,
+                        pages,
+                        len(ordered),
+                    )
+                    return ordered
+            self.gap_recovery_metrics["gap_recovery_incomplete_total"] += 1
+            self.gap_recovery_metrics["gap_recovery_deals_total"] += len(recovered)
+            self.last_gap_recovery = {
+                "status": GAP_RECOVERY_INCOMPLETE,
+                "pages": pages,
+                "deals": len(recovered),
+                "boundary_found": False,
+                "at": self._clock().isoformat(),
+            }
+            logger.warning(
+                "gap_recovery.incomplete pages=%s deals=%s max_pages=%s",
+                pages,
+                len(recovered),
+                max_pages,
+            )
+            return _ordered_deals(list(recovered.values()))
+        except Exception as exc:  # noqa: BLE001 - recovery must not hide GraphQL results
+            self.gap_recovery_metrics["gap_recovery_failures_total"] += 1
+            self.gap_recovery_metrics["gap_recovery_deals_total"] += len(recovered)
+            self.last_gap_recovery = {
+                "status": GAP_RECOVERY_FAILED,
+                "pages": pages,
+                "deals": len(recovered),
+                "boundary_found": False,
+                "at": self._clock().isoformat(),
+            }
+            logger.error(
+                "gap_recovery.failed pages=%s deals=%s error=%s",
+                pages,
+                len(recovered),
+                type(exc).__name__,
+            )
+            return _ordered_deals(list(recovered.values()))
 
     def _record_feed_baseline(self, deals, batch, rules=None):
         """First cycle ever: initialize the feed, then evaluate what is new.
