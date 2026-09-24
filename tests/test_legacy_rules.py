@@ -9,13 +9,15 @@ from chollometro_alerts.product import ProductExtraction
 from chollometro_alerts.repository import DealRepository
 
 
-def legacy(repository, query, *, price="50", enabled=1, state="ACTIVE"):
+def legacy(
+    repository, query, *, price="50", price_unit="absolute", enabled=1, state="ACTIVE"
+):
     now = "2026-09-24T00:00:00+00:00"
     cur = repository.db.execute(
         """INSERT INTO alert_rules
         (query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?)""",
-        (query, None, None, price, "absolute", enabled, state, now, now),
+        (query, None, None, price, price_unit, enabled, state, now, now),
     )
     repository.db.commit()
     return cur.lastrowid
@@ -88,3 +90,22 @@ def test_repair_is_idempotent_and_generic_legacy_stays_ambiguous(tmp_path):
     assert generic.classification == "GENERIC"
     assert repo.rule_by_id(generic_id).brand is None
     assert repo.rule_by_id(lagavulin_id).brand == "Lagavulin"
+
+
+def test_milk_legacy_dry_run_and_repair_enrich_product_type(tmp_path):
+    repo = DealRepository(tmp_path / "legacy.sqlite3")
+    rule_id = legacy(repo, "leche", price="0.79", price_unit="liter")
+    proposal = next(
+        item for item in audit_legacy_rules(repo) if item.rule_id == rule_id
+    )
+    assert (proposal.classification, proposal.product_type, proposal.brand) == (
+        "LEGACY_SAFE_TO_ENRICH",
+        "leche",
+        None,
+    )
+    assert repair_legacy_rules(repo, dry_run=True)[0].rule_id == rule_id
+    repair_legacy_rules(repo, dry_run=False)
+    repaired = repo.rule_by_id(rule_id)
+    assert repaired.product == "leche"
+    assert repaired.brand is None
+    assert repaired.constraints.max_price_per_liter == Decimal("0.79")
