@@ -968,6 +968,29 @@ the table only grows.
 
 ## 🧪 Testing
 
+## 📈 Temperature momentum
+
+Temperature momentum is an opt-in, deterministic signal for recent deals. It
+keeps temperature (the absolute popularity) separate from velocity (the rate
+at which popularity is growing): a deal at 70° growing at `+5 °/min` can be
+interesting before it becomes a hot deal. Only provider `published_at` is used
+for age; the default maximum age is three hours (the boundary is inclusive).
+
+The available velocity windows are 5, 15, 30 and 60 minutes. Each rate uses a
+linear regression over all snapshots in that window, so irregular polling and
+unchanged or falling temperatures are handled without inventing zeroes for
+missing history. `age_normalized_heat` is an additional diagnostic metric and
+does not replace velocity.
+
+Set `TEMPERATURE_MOMENTUM_ENABLED=true` to enable threshold transitions. The
+default trigger is `3 °/min` over 15 minutes and the reset is below `2 °/min`,
+which prevents repeated alerts while a deal remains above the threshold.
+Snapshots are stored in SQLite (`deal_temperature_snapshots`) with an index on
+`thread_id, observed_at`, deduplicated by exact `(thread_id, temperature,
+observed_at)`, and retained for 24 hours by the scan cycle. Per-alert
+structured rules can opt in with `momentum_enabled`, choose a supported window,
+and set `minimum_temperature_velocity`. Existing rules remain unchanged.
+
 ```bash
 python -m pytest -q
 ruff check .

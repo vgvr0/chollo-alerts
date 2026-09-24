@@ -125,6 +125,25 @@ def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
                 "🤖 Coincidencia semántica:",
                 f'"{evidence.semantic_reason}"',
             ]
+        if evidence.momentum is not None:
+            momentum = evidence.momentum
+            velocity = momentum.get("velocity")
+            age = momentum.get("age_minutes")
+            lines += [
+                "",
+                "📈 Momentum:",
+                (
+                    f"• Crecimiento {momentum.get('window_minutes')} min: {velocity:+.2f} °/min"
+                    if velocity is not None
+                    else "• Crecimiento: N/D"
+                ),
+                (
+                    f"• Edad del chollo: {age:.0f} min"
+                    if age is not None
+                    else "• Edad del chollo: N/D"
+                ),
+                f"• Motivo: temperatura creciendo por encima de {momentum.get('minimum_velocity')} °/min",
+            ]
         lines += ["", f"🧠 Evaluación: {evidence.method}"]
     lines += ["", deal.url]
     return "\n".join(lines)

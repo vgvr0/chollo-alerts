@@ -221,6 +221,16 @@ class DealRepository:
             last_telegram_error_at TEXT,
             telegram_consecutive_failures INTEGER NOT NULL DEFAULT 0
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS deal_temperature_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
+            temperature REAL NOT NULL, observed_at TEXT NOT NULL,
+            UNIQUE(thread_id, temperature, observed_at))""")
+        db.execute("""CREATE TABLE IF NOT EXISTS temperature_momentum_state (
+            thread_id TEXT PRIMARY KEY, above_threshold INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL)""")
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_thread_time ON deal_temperature_snapshots(thread_id, observed_at)"
+        )
         db.commit()
 
     def close(self):
@@ -233,6 +243,52 @@ class DealRepository:
             db = self._connections.pop(thread_id, None)
         if db is not None:
             db.close()
+
+    def record_temperature_snapshot(self, thread_id, temperature, observed_at=None):
+        stamp = as_utc(observed_at or datetime.now(UTC)).isoformat()
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO deal_temperature_snapshots(thread_id,temperature,observed_at) VALUES (?,?,?)",
+            (str(thread_id), float(temperature), stamp),
+        )
+        self.db.commit()
+        return cur.rowcount == 1
+
+    def temperature_snapshots(self, thread_id, since=None):
+        query = "SELECT thread_id,temperature,observed_at FROM deal_temperature_snapshots WHERE thread_id=?"
+        params = [str(thread_id)]
+        if since is not None:
+            query += " AND observed_at>=?"
+            params.append(as_utc(since).isoformat())
+        query += " ORDER BY observed_at"
+        from .temperature_momentum import TemperatureSnapshot
+
+        return [
+            TemperatureSnapshot(row[0], row[1], as_utc(row[2]))
+            for row in self.db.execute(query, params)
+        ]
+
+    def reset_old_temperature_snapshots(self, before=None):
+        before = as_utc(before or datetime.now(UTC))
+        cur = self.db.execute(
+            "DELETE FROM deal_temperature_snapshots WHERE observed_at < ?",
+            (before.isoformat(),),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def temperature_momentum_above(self, thread_id):
+        row = self.db.execute(
+            "SELECT above_threshold FROM temperature_momentum_state WHERE thread_id=?",
+            (str(thread_id),),
+        ).fetchone()
+        return bool(row[0]) if row else False
+
+    def set_temperature_momentum_above(self, thread_id, above):
+        self.db.execute(
+            "INSERT INTO temperature_momentum_state(thread_id,above_threshold,updated_at) VALUES (?,?,?) ON CONFLICT(thread_id) DO UPDATE SET above_threshold=excluded.above_threshold,updated_at=excluded.updated_at",
+            (str(thread_id), int(above), datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
 
     def list_alert_rules(self, enabled_only=False):
         sql = "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules"

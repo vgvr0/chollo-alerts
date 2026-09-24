@@ -184,6 +184,11 @@ class AlertRule(BaseModel):
         ),
     )
     constraints: AlertConstraints = Field(default_factory=AlertConstraints)
+    momentum_enabled: bool = Field(
+        default=False, description="Opt-in temperature momentum condition."
+    )
+    momentum_window_minutes: int = Field(default=15, ge=5)
+    minimum_temperature_velocity: float = Field(default=3.0, ge=0)
     schema_version: int = Field(default=1, ge=1)
 
     @field_validator("query", "product", "brand", "category", "store")
