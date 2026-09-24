@@ -22,6 +22,7 @@ dev = [
     "mypy>=1.11",
     "pip-audit>=2.9",
     "pytest>=8.0",
+    "pytest-cov>=7.0",
     "ruff>=0.6",
     "types-requests>=2.31",
 ]
@@ -31,3 +32,10 @@ chollometro-alerts = "chollometro_alerts.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["src/chollometro_alerts"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
