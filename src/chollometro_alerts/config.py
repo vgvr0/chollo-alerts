@@ -240,6 +240,8 @@ class RetentionSettings:
 # omitting the argument, it returns 20.
 GRAPHQL_DEFAULT_WINDOW = 30
 GRAPHQL_MAX_EXPLICIT_WINDOW = 20
+GRAPHQL_GAP_RECOVERY_MAX_PAGES_DEFAULT = 5
+GRAPHQL_GAP_RECOVERY_MAX_PAGES_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,8 @@ class GraphQLFeedSettings:
     enabled: bool = True
     window_limit: int | None = None
     path: str = "/graphql"
+    gap_recovery_enabled: bool = False
+    gap_recovery_max_pages: int = GRAPHQL_GAP_RECOVERY_MAX_PAGES_DEFAULT
 
     @classmethod
     def from_env(cls):
@@ -272,7 +276,28 @@ class GraphQLFeedSettings:
         path = os.getenv("CHOLLOMETRO_GRAPHQL_PATH", "/graphql").strip() or "/graphql"
         if not path.startswith("/"):
             raise ConfigurationError("CHOLLOMETRO_GRAPHQL_PATH debe empezar por /")
-        return cls(enabled, window, path)
+        recovery = os.getenv("GRAPHQL_GAP_RECOVERY_ENABLED", "false").strip().casefold()
+        if recovery not in {"true", "false"}:
+            raise ConfigurationError(
+                "GRAPHQL_GAP_RECOVERY_ENABLED debe ser true o false"
+            )
+        try:
+            max_pages = int(
+                os.getenv(
+                    "GRAPHQL_GAP_RECOVERY_MAX_PAGES",
+                    str(GRAPHQL_GAP_RECOVERY_MAX_PAGES_DEFAULT),
+                )
+            )
+        except ValueError as exc:
+            raise ConfigurationError(
+                "GRAPHQL_GAP_RECOVERY_MAX_PAGES debe ser un entero"
+            ) from exc
+        if not 1 <= max_pages <= GRAPHQL_GAP_RECOVERY_MAX_PAGES_LIMIT:
+            raise ConfigurationError(
+                "GRAPHQL_GAP_RECOVERY_MAX_PAGES debe estar entre 1 y "
+                f"{GRAPHQL_GAP_RECOVERY_MAX_PAGES_LIMIT}"
+            )
+        return cls(enabled, window, path, recovery == "true", max_pages)
 
 
 def _window_limit():
