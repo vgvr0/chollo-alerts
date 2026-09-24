@@ -770,9 +770,6 @@ class AlertService:
             if should_alert:
                 self.last_summary.momentum_alerts += 1
             self.repository.set_temperature_momentum_above(deal.deal_id, above)
-        cleanup = getattr(self.repository, "reset_old_temperature_snapshots", None)
-        if cleanup is not None:
-            cleanup(now - timedelta(hours=settings.retention_hours))
 
     @staticmethod
     def _already_settled(observation, deal, created_at):

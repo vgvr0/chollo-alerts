@@ -188,6 +188,46 @@ class TemperatureMomentumSettings:
         return cls(raw == "true", age, window, minimum, reset, retention)
 
 
+@dataclass(frozen=True)
+class RetentionSettings:
+    """Conservative retention policy for non-critical historical data."""
+
+    enabled: bool = True
+    feed_threads_days: int = 0
+    snapshots_hours: float = 24.0
+    observations_days: int = 0
+    llm_cache_days: int = 30
+    error_history_days: int = 90
+    scan_history_days: int = 90
+    batch_size: int = 500
+    interval_hours: float = 24.0
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        raw = os.getenv("RETENTION_ENABLED", "true").strip().casefold()
+        if raw not in {"true", "false"}:
+            raise ConfigurationError("RETENTION_ENABLED debe ser true o false")
+        feed_days = _non_negative_int("RETENTION_FEED_THREADS_DAYS", 0)
+        observation_days = _non_negative_int("RETENTION_OBSERVATIONS_DAYS", 0)
+        if feed_days or observation_days:
+            raise ConfigurationError(
+                "RETENTION_FEED_THREADS_DAYS y RETENTION_OBSERVATIONS_DAYS deben ser 0: "
+                "son estado de deduplicación y no se podan automáticamente"
+            )
+        return cls(
+            enabled=raw == "true",
+            feed_threads_days=feed_days,
+            snapshots_hours=_float("RETENTION_SNAPSHOTS_HOURS", 24.0),
+            observations_days=observation_days,
+            llm_cache_days=_non_negative_int("RETENTION_LLM_CACHE_DAYS", 30),
+            error_history_days=_non_negative_int("RETENTION_ERROR_HISTORY_DAYS", 90),
+            scan_history_days=_non_negative_int("RETENTION_SCAN_HISTORY_DAYS", 90),
+            batch_size=max(1, _non_negative_int("RETENTION_BATCH_SIZE", 500)),
+            interval_hours=_float("RETENTION_INTERVAL_HOURS", 24.0),
+        )
+
+
 # Window behaviour of `threads(filter: {}, limit: N)`, measured against the live
 # endpoint (2026-09-23):
 #
