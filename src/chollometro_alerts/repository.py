@@ -3,12 +3,13 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from .alert_rule import AlertConstraints, AlertRule
 from .intent import AlertIntent
 from .models import Deal
+from .retention import RetentionResult
 
 DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
 
@@ -221,6 +222,17 @@ class DealRepository:
             last_telegram_error_at TEXT,
             telegram_consecutive_failures INTEGER NOT NULL DEFAULT 0
         )""")
+        runtime_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(runtime_status)")
+        }
+        for name, definition in (
+            ("last_retention_started_at", "TEXT"),
+            ("last_retention_finished_at", "TEXT"),
+            ("last_retention_status", "TEXT"),
+            ("last_retention_error_type", "TEXT"),
+        ):
+            if name not in runtime_columns:
+                db.execute(f"ALTER TABLE runtime_status ADD COLUMN {name} {definition}")
         db.execute("""CREATE TABLE IF NOT EXISTS deal_temperature_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
             temperature REAL NOT NULL, observed_at TEXT NOT NULL,
@@ -230,6 +242,15 @@ class DealRepository:
             updated_at TEXT NOT NULL)""")
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_thread_time ON deal_temperature_snapshots(thread_id, observed_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_observed_at ON deal_temperature_snapshots(observed_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scan_runs_finished_at ON scan_runs(finished_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_error_alerts_last_seen_at ON error_alerts(last_seen_at)"
         )
         db.commit()
 
@@ -275,6 +296,130 @@ class DealRepository:
         )
         self.db.commit()
         return cur.rowcount
+
+    def retention_last_finished_at(self):
+        value = self._runtime_row().get("last_retention_finished_at")
+        return as_utc(value)
+
+    def retention_started(self, at=None):
+        stamp = as_utc(at or datetime.now(UTC)).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            "UPDATE runtime_status SET last_retention_started_at=?, last_retention_status=? WHERE id=1",
+            (stamp, "RUNNING"),
+        )
+        self.db.commit()
+
+    def retention_finished(self, at=None, status="SUCCESS", error_type=None):
+        stamp = as_utc(at or datetime.now(UTC)).isoformat()
+        self._runtime_row()
+        self.db.execute(
+            "UPDATE runtime_status SET last_retention_finished_at=?, last_retention_status=?, last_retention_error_type=? WHERE id=1",
+            (stamp, status, error_type),
+        )
+        self.db.commit()
+
+    def retention_counts(self, settings, *, now=None):
+        now = as_utc(now or datetime.now(UTC))
+        cutoffs = self._retention_cutoffs(settings, now)
+        return {
+            "snapshots": self._eligible_count(
+                "SELECT COUNT(*) FROM deal_temperature_snapshots WHERE observed_at < ?",
+                (cutoffs["snapshots"],),
+            ),
+            "cache_entries": self._eligible_count(
+                """SELECT COUNT(*) FROM product_extractions p
+                   JOIN deals d ON d.deal_id=p.deal_id
+                   WHERE d.first_seen_at < ?""",
+                (cutoffs["cache"],),
+            ),
+            "error_history": self._eligible_count(
+                "SELECT COUNT(*) FROM error_alerts WHERE last_seen_at < ?",
+                (cutoffs["errors"],),
+            ),
+            "scan_runs": self._eligible_count(
+                "SELECT COUNT(*) FROM scan_runs WHERE finished_at IS NOT NULL AND finished_at < ?",
+                (cutoffs["scan_runs"],),
+            ),
+        }
+
+    def _eligible_count(self, sql, params):
+        row = self.db.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _retention_cutoffs(settings, now):
+        return {
+            "snapshots": (now - timedelta(hours=settings.snapshots_hours)).isoformat(),
+            "cache": (now - timedelta(days=settings.llm_cache_days)).isoformat(),
+            "errors": (now - timedelta(days=settings.error_history_days)).isoformat(),
+            "scan_runs": (now - timedelta(days=settings.scan_history_days)).isoformat(),
+        }
+
+    def prune_retention(self, settings, *, now=None, dry_run=False):
+        now = as_utc(now or datetime.now(UTC))
+        cutoffs = self._retention_cutoffs(settings, now)
+        if dry_run:
+            counts = self.retention_counts(settings, now=now)
+            return RetentionResult(
+                dry_run=True,
+                deleted_snapshots=counts["snapshots"],
+                deleted_cache_entries=counts["cache_entries"],
+                deleted_error_history=counts["error_history"],
+                deleted_scan_runs=counts["scan_runs"],
+            )
+
+        total_batches = 0
+        deleted = {}
+        operations = (
+            (
+                "snapshots",
+                """DELETE FROM deal_temperature_snapshots WHERE rowid IN
+             (SELECT rowid FROM deal_temperature_snapshots WHERE observed_at < ? LIMIT ?)""",
+                cutoffs["snapshots"],
+            ),
+            (
+                "cache_entries",
+                """DELETE FROM product_extractions WHERE rowid IN
+             (SELECT p.rowid FROM product_extractions p JOIN deals d ON d.deal_id=p.deal_id
+              WHERE d.first_seen_at < ? LIMIT ?)""",
+                cutoffs["cache"],
+            ),
+            (
+                "error_history",
+                """DELETE FROM error_alerts WHERE rowid IN
+             (SELECT rowid FROM error_alerts WHERE last_seen_at < ? LIMIT ?)""",
+                cutoffs["errors"],
+            ),
+            (
+                "scan_runs",
+                """DELETE FROM scan_runs WHERE rowid IN
+             (SELECT rowid FROM scan_runs WHERE finished_at IS NOT NULL AND finished_at < ? LIMIT ?)""",
+                cutoffs["scan_runs"],
+            ),
+        )
+        for name, sql, cutoff in operations:
+            # One batch per category keeps an automatic run bounded. A later
+            # run continues from the same cutoff, so cleanup remains idempotent.
+            with self.db:
+                cur = self.db.execute(sql, (cutoff, settings.batch_size))
+            count = max(cur.rowcount, 0)
+            total_batches += int(count > 0)
+            deleted[name] = count
+        return RetentionResult(
+            dry_run=False,
+            deleted_snapshots=deleted.get("snapshots", 0),
+            deleted_cache_entries=deleted.get("cache_entries", 0),
+            deleted_error_history=deleted.get("error_history", 0),
+            deleted_scan_runs=deleted.get("scan_runs", 0),
+            batches=total_batches,
+        )
+
+    def vacuum(self):
+        """Explicit physical compaction; never part of automatic retention."""
+        self.db.commit()
+        self.db.execute("VACUUM")
+        self.db.commit()
 
     def temperature_momentum_above(self, thread_id):
         row = self.db.execute(

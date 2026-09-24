@@ -2,6 +2,7 @@ import logging
 import threading
 
 from .errors import SCAN_SUCCESS
+from .retention import RetentionService
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
     listener = threading.Thread(target=listen, name="telegram-listener", daemon=True)
     listener.start()
     repository = service.repository
+    retention = RetentionService(repository)
     repository.runtime_daemon_started()
     logger.info("daemon.started interval_minutes=%s", interval_minutes)
     try:
@@ -64,6 +66,11 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                     logger.exception("scan.failed run_id=%s", run_id)
                 else:
                     logger.exception("scan.failed")
+            try:
+                retention.run_if_due()
+            except Exception:
+                # Maintenance is disposable work and must never stop discovery.
+                logger.exception("retention.auto_failed")
             repository.runtime_heartbeat()
             stop_event.wait(interval_minutes * 60)
     finally:
