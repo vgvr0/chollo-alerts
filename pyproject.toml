@@ -14,7 +14,7 @@ dependencies = [
     # `zoneinfo` reads the IANA database from the system; Windows does not ship
     # it, and the notification windows are defined in a real timezone
     # (`Europe/Madrid` by default), so the data is a declared dependency.
-    "tzdata>=2024.1",
+    "tzdata>=2026.4",
 ]
 
 [project.optional-dependencies]
