@@ -1,5 +1,7 @@
 import logging
+import re
 import time
+from decimal import ROUND_HALF_UP, Decimal
 
 import requests
 
@@ -21,6 +23,75 @@ logger = logging.getLogger(__name__)
 # How the persisted price dimension is rendered back to the user. An absolute
 # price is the total price of the deal, so it has no "/unit" suffix at all.
 PRICE_UNIT_LABELS = {"liter": "L", "unit": "ud", "kilogram": "kg"}
+
+
+def _spanish_amount(value) -> str:
+    """Render a rule amount with two decimals and Spanish thousands groups."""
+    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    integer, decimals = f"{amount:.2f}".split(".")
+    groups = []
+    while integer:
+        groups.append(integer[-3:])
+        integer = integer[:-3]
+    return ".".join(reversed(groups)) + "," + decimals
+
+
+def _display_words(value: str) -> str:
+    """Make stored identity fields readable without damaging acronyms."""
+    words = []
+    for word in value.split():
+        if word.isupper() or (
+            word.isalpha() and len(word) <= 2 and word.lower() in {"pc", "tv"}
+        ):
+            words.append(word.upper())
+        else:
+            words.append(word[:1].upper() + word[1:].lower())
+    return " ".join(words)
+
+
+def alert_display_name(rule, fallback: str | None = None) -> str:
+    """Build the human-facing identity from the structured rule first."""
+    query = (rule.query or fallback or "alerta").strip()
+    product = (rule.product or "").strip()
+    brand = (rule.brand or "").strip()
+    if brand and not product:
+        return _display_words(brand)
+    if not product and not brand:
+        return query
+    if brand:
+        query_without_brand = re.sub(re.escape(brand), "", query, flags=re.IGNORECASE)
+        query_without_brand = " ".join(query_without_brand.split())
+    else:
+        query_without_brand = query
+    product_name = query_without_brand or product
+    if product_name and brand:
+        return _display_words(f"{product_name} {brand}")
+    return _display_words(product_name or brand or query)
+
+
+def listing_price_line(constraints) -> str | None:
+    """Render the stored price restriction for the visual alert listing."""
+    for value, unit in (
+        (constraints.max_price, "absolute"),
+        (constraints.max_price_per_unit, "unit"),
+        (constraints.max_price_per_liter, "liter"),
+        (getattr(constraints, "max_price_per_kilogram", None), "kilogram"),
+    ):
+        if value is not None:
+            return f"💶 Menos de {_spanish_amount(value)} {price_suffix(unit)}"
+    return None
+
+
+def listing_temperature_line(constraints) -> str | None:
+    minimum = constraints.temperature_min
+    maximum = constraints.temperature_max
+    if minimum is not None and maximum is not None:
+        return f"🔥 Temperatura: {degrees(minimum)}–{degrees(maximum)}"
+    if minimum is not None:
+        return f"🔥 Temperatura mínima: {degrees(minimum)}"
+    if maximum is not None:
+        return f"🔥 Temperatura máxima: {degrees(maximum)}"
+    return None
 
 
 def price_suffix(price_unit):
@@ -415,9 +486,15 @@ class TelegramRuleController:
     def _format(self, intent, rows, baseline_count=None):
         if intent.action == "list":
             if not rows:
-                return "🔔 Tus alertas:\n\nNo tienes alertas configuradas."
-            return "🔔 Tus alertas:\n\n" + "\n".join(
-                self._listing_line(row) for row in rows
+                return "🔔 Tus alertas\n\nNo tienes alertas configuradas."
+            blocks = [self._listing_line(row) for row in rows]
+            active = sum(bool(row[6]) for row in rows)
+            inactive = len(rows) - active
+            return (
+                "🔔 Tus alertas\n\n"
+                + "\n\n".join(blocks)
+                + "\n\n"
+                + self._listing_summary(active, inactive)
             )
         verb = {
             "create": "Alerta creada",
@@ -463,17 +540,29 @@ class TelegramRuleController:
         rule = self._stored_rule(row)
         if rule is None:
             return (
-                f"#{row[0]} — {row[1]} — {self._legacy_price(row)} — "
-                f"{'activa' if row[6] else 'inactiva'}"
+                f"{'✅' if row[6] else '⏸️'} #{row[0]} · {_display_words(row[1])}\n"
+                f"💶 {self._legacy_price(row)}"
             )
-        parts = [f"#{row[0]} — {row[1]} — {rule_price_text(rule)}"]
-        temperature = temperature_condition(
-            rule.constraints.temperature_min, rule.constraints.temperature_max
-        )
+        lines = [
+            f"{'✅' if row[6] else '⏸️'} #{row[0]} · {alert_display_name(rule, row[1])}"
+        ]
+        price = listing_price_line(rule.constraints)
+        if price:
+            lines.append(price)
+        temperature = listing_temperature_line(rule.constraints)
         if temperature:
-            parts.append(f"🌡️ {temperature}")
-        parts.append("activa" if row[6] else "inactiva")
-        return " — ".join(parts)
+            lines.append(temperature)
+        if rule.include_merchants:
+            lines.append(f"🏪 {', '.join(rule.include_merchants)}")
+        if rule.exclude_merchants:
+            lines.append(f"🚫 {', '.join(rule.exclude_merchants)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _listing_summary(active, inactive):
+        active_word = "alerta activa" if active == 1 else "alertas activas"
+        inactive_word = "inactiva" if inactive == 1 else "inactivas"
+        return f"{active} {active_word} · {inactive} {inactive_word}"
 
     def _stored_rule(self, row):
         if self.repository is None:
@@ -490,5 +579,4 @@ class TelegramRuleController:
         """The legacy price column of a row, or "sin precio" when it has none."""
         if row[4] in (None, "", "None"):
             return "sin precio"
-        amount = f"{float(row[4]):.2f}".replace(".", ",")
-        return f"< {amount} {price_suffix(row[5])}"
+        return f"Menos de {_spanish_amount(row[4])} {price_suffix(row[5])}"

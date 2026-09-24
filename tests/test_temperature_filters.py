@@ -508,7 +508,7 @@ def test_a_temperature_only_alert_is_created_and_listed(tmp_path):
     listing = controller._format(
         AlertIntent(action="list"), repository.list_alert_rules()
     )
-    assert "🌡️ al menos 500°" in listing
+    assert "🔥 Temperatura mínima: 500°" in listing
     assert "0,00 €" not in listing
 
 
