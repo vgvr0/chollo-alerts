@@ -36,7 +36,7 @@ from .repository import DealRepository
 from .runtime import positive_interval, run_daemon
 from .service import AlertService
 from .telegram import DryRunNotifier, TelegramNotifier
-from .telegram_rules import TelegramRuleController
+from .telegram_rules import TelegramRuleController, format_alert_list
 
 PRICE_REJECTIONS = {
     "REJECTED_PRICE",
@@ -263,9 +263,8 @@ def main():
             # canonical `AlertRule` resolved through `rule_from_listing()` (a
             # structured row, or a legacy row reconstructed by `rule_from_row`).
             # Read-only: nothing is written, not even the legacy rows.
-            for row in repository.list_alert_rules():
-                rule = repository.rule_from_listing(row)
-                print(format_alert_listing(row[0], rule, bool(row[6])))
+            rows = repository.list_alert_rules()
+            print(format_alert_list(rows, repository.rule_from_listing))
             return
         if a.alert_command == "test":
             # Read-only simulator: no scraper, no LLM, no Telegram, no writes.

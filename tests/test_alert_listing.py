@@ -91,7 +91,9 @@ def test_alert_list_shows_a_legacy_rule(monkeypatch, tmp_path, capsys):
 
     lines = run_alert_list(monkeypatch, capsys, repository.path)
 
-    assert lines == [f"#{rule_id} — zapatillas — zapatillas — ASICS — activa"]
+    text = "\n".join(lines)
+    assert f"✅ #{rule_id} · Zapatillas ASICS" in text
+    assert "💶 Menos de 200,00 €/ud" in text
 
 
 def test_alert_list_shows_a_structured_rule(monkeypatch, tmp_path, capsys):
@@ -115,7 +117,9 @@ def test_alert_list_shows_a_structured_rule(monkeypatch, tmp_path, capsys):
 
     lines = run_alert_list(monkeypatch, capsys, repository.path)
 
-    assert lines == [f"#{rule_id} — coca-cola — refresco — Coca-Cola — activa"]
+    text = "\n".join(lines)
+    assert f"✅ #{rule_id} · Refresco Coca-Cola" in text
+    assert "💶 Menos de 0,50 €/ud" in text
     assert repository.rule_from_listing(
         repository.list_alert_rules()[0]
     ).constraints == (AlertConstraints(max_price_per_unit=Decimal("0.50")))
@@ -144,11 +148,11 @@ def test_alert_list_shows_legacy_and_structured_rules_exactly_once(
 
     lines = run_alert_list(monkeypatch, capsys, repository.path)
 
-    assert lines == [
-        f"#{legacy_id} — leche — leche — N/D — activa",
-        f"#{structured_id} — coca-cola — N/D — N/D — inactiva",
-    ]
-    assert len(lines) == len({line.split(" — ")[0] for line in lines}) == 2
+    text = "\n".join(lines)
+    assert f"✅ #{legacy_id} · Leche" in text
+    assert f"⏸️ #{structured_id} · Coca-Cola" in text
+    assert text.count("· Leche") == 1
+    assert text.count("· Coca-Cola") == 1
 
 
 def test_alert_list_sees_the_same_rules_as_telegram(monkeypatch, tmp_path, capsys):
@@ -172,8 +176,12 @@ def test_alert_list_sees_the_same_rules_as_telegram(monkeypatch, tmp_path, capsy
 
     # `list_alert_rules()` is exactly what the Telegram listing reads.
     telegram_view = [row[0] for row in repository.list_alert_rules()]
-    assert [int(line.split(" ")[0][1:]) for line in lines] == telegram_view
-    assert len(lines) == len(telegram_view) == 3
+    listed_ids = [
+        int(line.split("#", 1)[1].split(" ", 1)[0])
+        for line in lines
+        if "#" in line and line.startswith(("✅", "⏸️"))
+    ]
+    assert listed_ids == telegram_view
 
 
 # --- Legacy price semantics stay untouched ----------------------------------
@@ -207,7 +215,8 @@ def test_alert_list_resolves_legacy_price_units_through_the_canonical_rule(
 
     lines = run_alert_list(monkeypatch, capsys, repository.path)
 
-    assert len(lines) == 3
+    text = "\n".join(lines)
+    assert text.count("💶") == 3
     constraints = [
         repository.rule_from_listing(row).constraints
         for row in repository.list_alert_rules()
@@ -245,7 +254,8 @@ def test_alert_list_never_writes(monkeypatch, tmp_path, capsys):
 
     lines = run_alert_list(monkeypatch, capsys, repository.path)
 
-    assert len(lines) == 2
+    text = "\n".join(lines)
+    assert text.count("#") == 2
     assert snapshot(repository) == before
     # In particular, the legacy row is still legacy.
     assert repository.load_alert_rule(legacy_id) is None
@@ -256,4 +266,6 @@ def test_alert_list_never_writes(monkeypatch, tmp_path, capsys):
 
 def test_alert_list_works_without_any_rule(monkeypatch, tmp_path, capsys):
     repository = DealRepository(tmp_path / "rules.sqlite3")
-    assert run_alert_list(monkeypatch, capsys, repository.path) == []
+    assert "No tienes alertas configuradas." in "\n".join(
+        run_alert_list(monkeypatch, capsys, repository.path)
+    )
