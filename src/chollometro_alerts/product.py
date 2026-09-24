@@ -161,6 +161,17 @@ def extract_product(
     except Exception:  # noqa: BLE001 - invalid providers use deterministic fallback
         return normalize_product_extraction(deterministic)
     merged = deterministic.model_dump()
+    # Numeric facts from the provider are admissible only when the title has
+    # an explicit volume expression.  This prevents "10 niveles" or "50
+    # cápsulas" from becoming litres through an over-eager model response.
+    explicit_volume = deterministic.total_volume_l is not None
+    suspicious_non_volume = bool(
+        re.search(
+            r"\b\d+\s*(?:niveles?|c[aá]psulas?|unidades?)\b",
+            product_text,
+            re.IGNORECASE,
+        )
+    )
     for field in (
         "product_type",
         "brand",
@@ -171,7 +182,15 @@ def extract_product(
         "unit_weight_kg",
         "total_weight_kg",
     ):
-        if merged[field] is None and getattr(llm_result, field) is not None:
+        if (
+            merged[field] is None
+            and getattr(llm_result, field) is not None
+            and (
+                explicit_volume
+                or not suspicious_non_volume
+                or field not in {"unit_volume_l", "total_volume_l"}
+            )
+        ):
             merged[field] = getattr(llm_result, field)
     merged["confidence"] = min(deterministic.confidence, llm_result.confidence)
     merged["extraction_source"] = (

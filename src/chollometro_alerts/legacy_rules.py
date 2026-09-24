@@ -38,11 +38,14 @@ class LegacyRuleProposal:
     query: str
     classification: str
     brand: str | None = None
+    product_type: str | None = None
     reason: str = ""
 
     @property
     def actionable(self) -> bool:
-        return self.classification == "LEGACY_SAFE_TO_ENRICH" and self.brand is not None
+        return self.classification == "LEGACY_SAFE_TO_ENRICH" and (
+            self.brand is not None or self.product_type is not None
+        )
 
 
 def _fold(value: str) -> str:
@@ -72,30 +75,45 @@ def infer_legacy_brand(query: str) -> tuple[str | None, str]:
 
 def classify_legacy_rule(row) -> LegacyRuleProposal:
     """Classify one alert_rules row without changing it."""
-    rule_id, query, product, brand, structured_rule = row
+    rule_id, query, product, brand, structured_rule, maximum, unit = row
     if structured_rule or product or brand:
         return LegacyRuleProposal(
-            rule_id, query, "STRUCTURED", brand, "already structured"
+            rule_id, query, "STRUCTURED", brand=brand, reason="already structured"
+        )
+    if (
+        _fold(query).strip() == "leche"
+        and not structured_rule
+        and unit == "liter"
+        and maximum is not None
+    ):
+        return LegacyRuleProposal(
+            rule_id,
+            query,
+            "LEGACY_SAFE_TO_ENRICH",
+            product_type="leche",
+            reason="exact known product query with persisted structured constraint",
         )
     if _fold(query).strip() in _GENERIC_TERMS:
         return LegacyRuleProposal(rule_id, query, "GENERIC", reason="generic query")
     inferred, reason = infer_legacy_brand(query)
     if inferred is not None:
         return LegacyRuleProposal(
-            rule_id, query, "LEGACY_SAFE_TO_ENRICH", inferred, reason
+            rule_id, query, "LEGACY_SAFE_TO_ENRICH", brand=inferred, reason=reason
         )
     return LegacyRuleProposal(rule_id, query, "LEGACY_AMBIGUOUS", reason=reason)
 
 
 def audit_legacy_rules(repository) -> list[LegacyRuleProposal]:
     rows = repository.db.execute(
-        """SELECT id, query, product_type, brand, structured_rule
+        """SELECT id, query, product_type, brand, structured_rule, max_price, price_unit
         FROM alert_rules ORDER BY id"""
     ).fetchall()
     return [classify_legacy_rule(row) for row in rows]
 
 
-def _legacy_rule_from_row(row, brand: str) -> AlertRule:
+def _legacy_rule_from_row(
+    row, brand: str | None = None, product_type: str | None = None
+) -> AlertRule:
     _, query, product, _, maximum, unit, _, _, _, _, _, _, _ = row
     kwargs = {}
     if unit == "liter":
@@ -106,7 +124,7 @@ def _legacy_rule_from_row(row, brand: str) -> AlertRule:
         kwargs["max_price"] = maximum
     return AlertRule(
         query=query,
-        product=product,
+        product=product or product_type,
         brand=brand,
         constraints=AlertConstraints(**kwargs),
     )
@@ -147,14 +165,15 @@ def repair_legacy_rules(
             "SELECT 1 FROM legacy_rule_repairs WHERE rule_id=?", (proposal.rule_id,)
         ).fetchone():
             continue
-        assert proposal.brand is not None
-        rule = _legacy_rule_from_row(row, proposal.brand)
+        rule = _legacy_rule_from_row(row, proposal.brand, proposal.product_type)
+        product_type = proposal.product_type
         db.execute(
             """UPDATE alert_rules
-            SET brand=?, structured_rule=?, schema_version=?
+            SET product_type=?, brand=?, structured_rule=?, schema_version=?
             WHERE id=? AND structured_rule IS NULL AND brand IS NULL
               AND product_type IS NULL""",
             (
+                product_type,
                 proposal.brand,
                 rule.model_dump_json(),
                 rule.schema_version,
@@ -169,7 +188,8 @@ def repair_legacy_rules(
                 proposal.rule_id,
                 json.dumps({"product": None, "brand": None}, ensure_ascii=False),
                 json.dumps(
-                    {"product": rule.product, "brand": rule.brand}, ensure_ascii=False
+                    {"product": product_type or rule.product, "brand": rule.brand},
+                    ensure_ascii=False,
                 ),
                 proposal.reason,
                 now,
