@@ -109,3 +109,13 @@ def test_milk_legacy_dry_run_and_repair_enrich_product_type(tmp_path):
     assert repaired.product == "leche"
     assert repaired.brand is None
     assert repaired.constraints.max_price_per_liter == Decimal("0.79")
+
+
+def test_unrepaired_legacy_milk_row_is_loaded_with_product_relevance(tmp_path):
+    repo = DealRepository(tmp_path / "legacy.sqlite3")
+    rule_id = legacy(repo, "leche", price="0.79", price_unit="liter")
+
+    loaded = repo.rule_by_id(rule_id)
+
+    assert loaded.product == "leche"
+    assert loaded.constraints.max_price_per_liter == Decimal("0.79")
