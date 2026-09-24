@@ -61,6 +61,9 @@ jobs:
       - name: Run mypy
         run: uv run mypy .
 
+      - name: Run tests with coverage
+        run: uv run pytest --cov=chollometro_alerts --cov-report=term-missing
+
       - name: Audit Python dependencies
         run: uv run pip-audit
 
