@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -8,7 +9,7 @@ from decimal import Decimal
 
 from .alert_rule import AlertConstraints, AlertRule
 from .intent import AlertIntent
-from .models import Deal
+from .models import Deal, User
 from .product import product_tokens
 from .retention import RetentionResult
 
@@ -73,6 +74,7 @@ class DealRepository:
         self.path = str(path)
         self._connections = {}
         self._connections_lock = threading.Lock()
+        self._initialized = False
 
     @property
     def db(self):
@@ -85,10 +87,22 @@ class DealRepository:
                 db.execute("PRAGMA busy_timeout=10000")
                 db.execute("PRAGMA journal_mode=WAL")
                 self._connections[thread_id] = db
-                self._initialize(db)
+                if not self._initialized:
+                    self._initialize(db)
+                    self._initialized = True
             return db
 
     def _initialize(self, db):
+        db.execute("""CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_user_id TEXT UNIQUE,
+            telegram_chat_id TEXT,
+            username TEXT,
+            first_name TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
         db.execute(
             """CREATE TABLE IF NOT EXISTS deals (deal_id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, price TEXT, merchant TEXT, temperature INTEGER, category TEXT NOT NULL, published_at TEXT, first_seen_at TEXT NOT NULL, notified_at TEXT)"""
         )
@@ -111,7 +125,7 @@ class DealRepository:
             price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
             state TEXT NOT NULL DEFAULT 'ACTIVE',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-            UNIQUE(query, product_type, brand, max_price, price_unit)
+            user_id INTEGER REFERENCES users(id)
             )"""
         )
         db.execute(
@@ -180,6 +194,10 @@ class DealRepository:
                 FROM alert_rules_legacy""")
             db.execute("DROP TABLE alert_rules_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(alert_rules)")}
+        if "user_id" not in columns:
+            db.execute(
+                "ALTER TABLE alert_rules ADD COLUMN user_id INTEGER REFERENCES users(id)"
+            )
         if "state" not in columns:
             db.execute(
                 "ALTER TABLE alert_rules ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'"
@@ -255,7 +273,152 @@ class DealRepository:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_error_alerts_last_seen_at ON error_alerts(last_seen_at)"
         )
+        self._migrate_alert_ownership(db)
         db.commit()
+
+    def _migrate_alert_ownership(self, db):
+        legacy_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or None
+        legacy_user = os.getenv("TELEGRAM_USER_ID", "").strip() or None
+        row = None
+        if legacy_user:
+            row = db.execute(
+                "SELECT id FROM users WHERE telegram_user_id=?", (legacy_user,)
+            ).fetchone()
+        if row is None and legacy_chat:
+            row = db.execute(
+                "SELECT id FROM users WHERE telegram_chat_id=?", (legacy_chat,)
+            ).fetchone()
+        has_rules = (
+            db.execute("SELECT 1 FROM alert_rules LIMIT 1").fetchone() is not None
+        )
+        # Without a configured destination there is no safe identity to invent.
+        # Such rows remain legacy/unowned until the operator configures Telegram.
+        if row is None and (legacy_chat or legacy_user) and (legacy_chat or has_rules):
+            now = datetime.now(UTC).isoformat()
+            row = (
+                db.execute(
+                    "INSERT INTO users(telegram_user_id,telegram_chat_id,username,enabled,created_at,updated_at) VALUES (?,?,?,1,?,?)",
+                    (legacy_user, legacy_chat, "legacy/default", now, now),
+                ).lastrowid,
+            )
+        if row:
+            db.execute(
+                "UPDATE alert_rules SET user_id=? WHERE user_id IS NULL", (row[0],)
+            )
+        schema = (
+            db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='alert_rules'"
+            ).fetchone()
+            or ("",)
+        )[0] or ""
+        if "UNIQUE(query" in schema and "user_id" not in schema:
+            db.execute("ALTER TABLE alert_rules RENAME TO alert_rules_legacy")
+            db.execute("""CREATE TABLE alert_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
+                product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
+                price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, original_text TEXT, structured_rule TEXT,
+                schema_version INTEGER, user_id INTEGER REFERENCES users(id)
+            )""")
+            db.execute("""INSERT INTO alert_rules
+                (id,query,product_type,brand,max_price,price_unit,enabled,state,
+                 created_at,updated_at,original_text,structured_rule,schema_version,user_id)
+                SELECT id,query,product_type,brand,max_price,price_unit,enabled,state,
+                 created_at,updated_at,original_text,structured_rule,schema_version,user_id
+                FROM alert_rules_legacy""")
+            db.execute("DROP TABLE alert_rules_legacy")
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_owner_identity ON alert_rules(user_id,query,product_type,brand,max_price,price_unit)"
+        )
+
+    def user_for_id(self, user_id):
+        row = self.db.execute(
+            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at FROM users WHERE id=?",
+            (user_id,),
+        ).fetchone()
+        return (
+            User(
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                bool(row[5]),
+                as_utc(row[6]),
+                as_utc(row[7]),
+            )
+            if row
+            else None
+        )
+
+    def user_for_telegram_id(self, telegram_user_id):
+        return self.db.execute(
+            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at FROM users WHERE telegram_user_id=?",
+            (str(telegram_user_id),),
+        ).fetchone()
+
+    def user_for_chat(self, chat_id):
+        row = self.db.execute(
+            "SELECT id FROM users WHERE telegram_chat_id=?", (str(chat_id),)
+        ).fetchone()
+        return self.user_for_id(row[0]) if row else None
+
+    def legacy_user(self):
+        row = self.db.execute(
+            "SELECT id FROM users WHERE username='legacy/default' ORDER BY id LIMIT 1"
+        ).fetchone()
+        return self.user_for_id(row[0]) if row else None
+
+    def create_user(
+        self,
+        *,
+        telegram_user_id=None,
+        telegram_chat_id=None,
+        username=None,
+        first_name=None,
+        enabled=True,
+    ):
+        now = datetime.now(UTC).isoformat()
+        cur = self.db.execute(
+            "INSERT INTO users(telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                None if telegram_user_id is None else str(telegram_user_id),
+                None if telegram_chat_id is None else str(telegram_chat_id),
+                username,
+                first_name,
+                int(enabled),
+                now,
+                now,
+            ),
+        )
+        self.db.commit()
+        return self.user_for_id(cur.lastrowid)
+
+    def update_user_metadata(self, user_id, identity):
+        self.db.execute(
+            "UPDATE users SET telegram_chat_id=?,username=?,first_name=?,updated_at=? WHERE id=?",
+            (
+                identity.telegram_chat_id,
+                identity.username,
+                identity.first_name,
+                datetime.now(UTC).isoformat(),
+                user_id,
+            ),
+        )
+        self.db.commit()
+
+    def list_users(self):
+        return self.db.execute(
+            "SELECT u.id,u.telegram_user_id,u.telegram_chat_id,u.enabled,COUNT(r.id) FROM users u LEFT JOIN alert_rules r ON r.user_id=u.id GROUP BY u.id ORDER BY u.id"
+        ).fetchall()
+
+    def notification_chat_id(self, rule_id):
+        row = self.db.execute(
+            "SELECT u.telegram_chat_id FROM alert_rules r LEFT JOIN users u ON u.id=r.user_id WHERE r.id=?",
+            (rule_id,),
+        ).fetchone()
+        return row[0] if row and row[0] else None
 
     def close(self):
         """Close the calling thread's connection (the safe SQLite ownership boundary)."""
@@ -438,23 +601,29 @@ class DealRepository:
         )
         self.db.commit()
 
-    def list_alert_rules(self, enabled_only=False):
+    def list_alert_rules(self, enabled_only=False, user_id=None):
         sql = "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules"
         if enabled_only:
             sql += " WHERE enabled=1"
+        if user_id is not None:
+            sql += " AND user_id=?" if enabled_only else " WHERE user_id=?"
+            return self.db.execute(sql, (user_id,)).fetchall()
         rows = self.db.execute(sql).fetchall()
         return rows
 
-    def apply_alert_intent(self, intent: AlertIntent):
+    def apply_alert_intent(self, intent: AlertIntent, user_id=None):
         from datetime import UTC, datetime
 
         now = datetime.now(UTC).isoformat()
         if intent.action == "list":
-            return self.list_alert_rules()
+            return self.list_alert_rules(user_id=user_id)
         query = intent.query or intent.product_type or intent.brand
+        scope = " AND user_id=?" if user_id is not None else ""
         row = self.db.execute(
-            "SELECT id FROM alert_rules WHERE query IS ? AND COALESCE(brand,'')=COALESCE(?, '')",
-            (query, intent.brand),
+            f"SELECT id FROM alert_rules WHERE query=? AND COALESCE(brand,'')=COALESCE(?, ''){scope}",
+            (query, intent.brand, user_id)
+            if user_id is not None
+            else (query, intent.brand),
         ).fetchone()
         # A temperature-only alert has no price at all. The legacy column is
         # NOT NULL and `save_alert_rule` already writes "0" for every alert
@@ -468,8 +637,17 @@ class DealRepository:
         legacy_unit = intent.price_unit or "absolute"
         if intent.action == "create":
             duplicate = self.db.execute(
-                "SELECT 1 FROM alert_rules WHERE query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
+                f"SELECT 1 FROM alert_rules WHERE query=? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?{scope}",
                 (
+                    query,
+                    intent.product_type,
+                    intent.brand,
+                    legacy_price,
+                    legacy_unit,
+                    user_id,
+                )
+                if user_id is not None
+                else (
                     query,
                     intent.product_type,
                     intent.brand,
@@ -479,7 +657,7 @@ class DealRepository:
             ).fetchone()
             if not duplicate:
                 self.db.execute(
-                    "INSERT INTO alert_rules(query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO alert_rules(query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         query,
                         intent.product_type,
@@ -490,41 +668,57 @@ class DealRepository:
                         "INITIALIZING",
                         now,
                         now,
+                        user_id,
                     ),
                 )
         elif row:
             if intent.action == "update":
+                update_scope = " AND user_id=?" if user_id is not None else ""
                 self.db.execute(
-                    "UPDATE alert_rules SET max_price=?,price_unit=?,updated_at=?,enabled=1,state='ACTIVE' WHERE id=?",
-                    (legacy_price, legacy_unit, now, row[0]),
+                    "UPDATE alert_rules SET max_price=?,price_unit=?,updated_at=?,enabled=1,state='ACTIVE' WHERE id=?"
+                    + update_scope,
+                    (legacy_price, legacy_unit, now, row[0], user_id)
+                    if user_id is not None
+                    else (legacy_price, legacy_unit, now, row[0]),
                 )
             elif intent.action in {"delete", "disable"}:
                 if intent.action == "delete":
-                    self.db.execute("DELETE FROM alert_rules WHERE id=?", (row[0],))
+                    self.delete_alert_rule(row[0], user_id=user_id)
                 else:
                     self.db.execute(
-                        "UPDATE alert_rules SET enabled=0,updated_at=? WHERE id=?",
-                        (now, row[0]),
+                        "UPDATE alert_rules SET enabled=0,updated_at=? WHERE id=?"
+                        + (" AND user_id=?" if user_id is not None else ""),
+                        (now, row[0], user_id)
+                        if user_id is not None
+                        else (now, row[0]),
                     )
             elif intent.action == "enable":
                 self.db.execute(
-                    "UPDATE alert_rules SET enabled=1,state='ACTIVE',updated_at=? WHERE id=?",
-                    (now, row[0]),
+                    "UPDATE alert_rules SET enabled=1,state='ACTIVE',updated_at=? WHERE id=?"
+                    + (" AND user_id=?" if user_id is not None else ""),
+                    (now, row[0], user_id) if user_id is not None else (now, row[0]),
                 )
         self.db.commit()
-        return self.list_alert_rules()
+        return self.list_alert_rules(user_id=user_id)
 
-    def delete_alert_rule(self, rule_id) -> bool:
+    def delete_alert_rule(self, rule_id, user_id=None) -> bool:
         """Remove one stored alert by its id (the reference was resolved already).
 
         The row keeps its identity until this point, so the deletion is of the
         alert the operator described, not of a text that happened to be equal.
         """
-        cur = self.db.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,))
+        sql = "DELETE FROM alert_rules WHERE id=?" + (
+            " AND user_id=?" if user_id is not None else ""
+        )
+        cur = self.db.execute(
+            sql, (rule_id, user_id) if user_id is not None else (rule_id,)
+        )
         self.db.commit()
         return cur.rowcount == 1
 
-    def replace_alert_rule(self, rule_id, rule: AlertRule, original_text=None) -> bool:
+    def replace_alert_rule(
+        self, rule_id, rule: AlertRule, original_text=None, user_id=None
+    ) -> bool:
         """Rewrite one stored alert in place with the rule of an update.
 
         The row keeps its id, its creation time and its matches: an update
@@ -538,8 +732,23 @@ class DealRepository:
             cur = self.db.execute(
                 """UPDATE alert_rules SET query=?,product_type=?,brand=?,max_price=?,
                 price_unit=?,updated_at=?,original_text=COALESCE(?,original_text),
-                structured_rule=?,schema_version=? WHERE id=?""",
+                structured_rule=?,schema_version=? WHERE id=?"""
+                + (" AND user_id=?" if user_id is not None else ""),
                 (
+                    rule.query,
+                    rule.product,
+                    rule.brand,
+                    price,
+                    unit,
+                    now,
+                    original_text,
+                    rule.model_dump_json(),
+                    rule.schema_version,
+                    rule_id,
+                    user_id,
+                )
+                if user_id is not None
+                else (
                     rule.query,
                     rule.product,
                     rule.brand,
@@ -561,13 +770,15 @@ class DealRepository:
         self.db.commit()
         return cur.rowcount == 1
 
-    def save_alert_rule(self, rule: AlertRule, original_text: str, enabled=True):
+    def save_alert_rule(
+        self, rule: AlertRule, original_text: str, enabled=True, user_id=None
+    ):
         now = datetime.now(UTC).isoformat()
         constraints = rule.constraints
         cur = self.db.execute(
             """INSERT INTO alert_rules
-            (query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at,original_text,structured_rule,schema_version)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at,original_text,structured_rule,schema_version,user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rule.query,
                 rule.product,
@@ -583,6 +794,7 @@ class DealRepository:
                 original_text,
                 rule.model_dump_json(),
                 rule.schema_version,
+                user_id,
             ),
         )
         self.db.commit()

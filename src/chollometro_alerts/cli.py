@@ -225,6 +225,7 @@ def main():
     check = sub.add_parser("check")
     check.add_argument("--dry-run", action="store_true")
     sub.add_parser("health", help="Evaluar la salud local del daemon")
+    sub.add_parser("users", help="Listar usuarios Telegram y sus alertas")
     probe = sub.add_parser("test-llm", help="Probar DeepSeek con una sola petición")
     probe.add_argument("text", help="Texto del producto que se extraerá")
     sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
@@ -292,6 +293,12 @@ def main():
         return
     if a.command == "health":
         raise SystemExit(health_check(a.db))
+    if a.command == "users":
+        repository = DealRepository(a.db)
+        print("id telegram_user_id telegram_chat_id enabled rules_count")
+        for row in repository.list_users():
+            print(*row)
+        return
     if a.command == "alert":
         repository = DealRepository(a.db)
         if a.alert_command == "list":
@@ -401,6 +408,8 @@ def main():
             authorized_chat_id=telegram.authorized_chat_id,
             repository=DealRepository(a.db),
             translator=extractor,
+            multiuser_enabled=telegram.multiuser_enabled,
+            auto_register=telegram.auto_register,
         )
         controller.poll_once()
         return
@@ -416,7 +425,17 @@ def main():
             service = AlertService(
                 ChollometroClient(),
                 repository,
-                TelegramNotifier(telegram.bot_token, telegram.authorized_chat_id),
+                (
+                    TelegramNotifier(
+                        telegram.bot_token,
+                        telegram.authorized_chat_id,
+                        repository=repository,
+                    )
+                    if telegram.multiuser_enabled
+                    else TelegramNotifier(
+                        telegram.bot_token, telegram.authorized_chat_id
+                    )
+                ),
                 feed=build_feed_client(),
             )
         controller = TelegramRuleController(
@@ -425,6 +444,8 @@ def main():
             repository=repository,
             translator=extractor,
             service=service,
+            multiuser_enabled=telegram.multiuser_enabled,
+            auto_register=telegram.auto_register,
         )
         stop = threading.Event()
         previous_handlers = {}

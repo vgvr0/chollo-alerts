@@ -455,10 +455,10 @@ class AlertCandidate:
         return content_tokens(" ".join(part for part in parts if part))
 
 
-def alert_candidates(repository) -> tuple[AlertCandidate, ...]:
+def alert_candidates(repository, user_id=None) -> tuple[AlertCandidate, ...]:
     """Every stored alert, resolved through the canonical rule boundary."""
     candidates = []
-    for row in repository.list_alert_rules():
+    for row in repository.list_alert_rules(user_id=user_id):
         rule_id = row[0]
         candidates.append(
             AlertCandidate(

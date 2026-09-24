@@ -157,7 +157,10 @@ def repair_legacy_rules(
     now = datetime.now(UTC).isoformat()
     for proposal in proposals:
         row = db.execute(
-            "SELECT * FROM alert_rules WHERE id=?", (proposal.rule_id,)
+            """SELECT id,query,product_type,brand,max_price,price_unit,enabled,state,
+               created_at,updated_at,original_text,structured_rule,schema_version
+               FROM alert_rules WHERE id=?""",
+            (proposal.rule_id,),
         ).fetchone()
         if row is None:
             continue

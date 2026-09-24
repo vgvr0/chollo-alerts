@@ -46,7 +46,14 @@ def post_with_retry(
 
 class TelegramNotifier:
     def __init__(
-        self, token, chat_id, timeout=20, retries=2, backoff=0.5, sleep=time.sleep
+        self,
+        token,
+        chat_id,
+        timeout=20,
+        retries=2,
+        backoff=0.5,
+        sleep=time.sleep,
+        repository=None,
     ):
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.chat_id = chat_id
@@ -54,12 +61,19 @@ class TelegramNotifier:
         self.retries = retries
         self.backoff = backoff
         self._sleep = sleep
+        self.repository = repository
 
-    def send(self, deal: Deal, evidence: MatchEvidence | None = None):
+    def send(self, deal: Deal, evidence: MatchEvidence | None = None, rule_id=None):
+        chat_id = (
+            self.repository.notification_chat_id(rule_id)
+            if self.repository and rule_id is not None
+            else None
+        )
+        chat_id = chat_id or self.chat_id
         post_with_retry(
             self.url,
             json={
-                "chat_id": self.chat_id,
+                "chat_id": chat_id,
                 "text": format_message(deal, evidence),
                 "disable_web_page_preview": False,
             },

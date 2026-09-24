@@ -23,6 +23,9 @@ class ConfigurationError(ValueError):
 class TelegramSettings:
     bot_token: str
     authorized_chat_id: str
+    multiuser_enabled: bool = False
+    auto_register: bool = False
+    telegram_user_id: str | None = None
 
     @classmethod
     def from_env(cls):
@@ -37,6 +40,15 @@ class TelegramSettings:
         return cls(
             bot_token=os.environ["TELEGRAM_BOT_TOKEN"].strip(),
             authorized_chat_id=os.environ["TELEGRAM_CHAT_ID"].strip(),
+            multiuser_enabled=os.getenv("TELEGRAM_MULTIUSER_ENABLED", "false")
+            .strip()
+            .casefold()
+            == "true",
+            auto_register=os.getenv("TELEGRAM_AUTO_REGISTER", "false")
+            .strip()
+            .casefold()
+            == "true",
+            telegram_user_id=os.getenv("TELEGRAM_USER_ID", "").strip() or None,
         )
 
 
