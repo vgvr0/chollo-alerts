@@ -44,6 +44,12 @@ def _display_words(value: str) -> str:
             word.isalpha() and len(word) <= 2 and word.lower() in {"pc", "tv"}
         ):
             words.append(word.upper())
+        elif "-" in word:
+            words.append(
+                "-".join(
+                    part[:1].upper() + part[1:].lower() for part in word.split("-")
+                )
+            )
         else:
             words.append(word[:1].upper() + word[1:].lower())
     return " ".join(words)
@@ -57,7 +63,7 @@ def alert_display_name(rule, fallback: str | None = None) -> str:
     if brand and not product:
         return _display_words(brand)
     if not product and not brand:
-        return query
+        return _display_words(query)
     if brand:
         query_without_brand = re.sub(re.escape(brand), "", query, flags=re.IGNORECASE)
         query_without_brand = " ".join(query_without_brand.split())
@@ -92,6 +98,67 @@ def listing_temperature_line(constraints) -> str | None:
     if maximum is not None:
         return f"🔥 Temperatura máxima: {degrees(maximum)}"
     return None
+
+
+def legacy_listing_price(row) -> str:
+    """Render the legacy price column when canonical resolution is unavailable."""
+    if row[4] in (None, "", "None"):
+        return "sin precio"
+    return f"Menos de {_spanish_amount(row[4])} {price_suffix(row[5])}"
+
+
+def format_listing_line(row, rule) -> str:
+    """Render one alert for every read-only listing surface."""
+    if rule is None:
+        return (
+            f"{'✅' if row[6] else '⏸️'} #{row[0]} · {_display_words(row[1])}\n"
+            f"💶 {legacy_listing_price(row)}"
+        )
+    # A partially repaired structured row may still have useful identity in
+    # the legacy columns. Use it for display only; never write it back.
+    display_rule = (
+        rule.model_copy(update={"brand": row[3]}) if not rule.brand and row[3] else rule
+    )
+    lines = [
+        f"{'✅' if row[6] else '⏸️'} #{row[0]} · {alert_display_name(display_rule, row[1])}"
+    ]
+    price = listing_price_line(display_rule.constraints)
+    if price:
+        lines.append(price)
+    temperature = listing_temperature_line(display_rule.constraints)
+    if temperature:
+        lines.append(temperature)
+    if display_rule.include_merchants:
+        lines.append(f"🏪 {', '.join(display_rule.include_merchants)}")
+    if display_rule.exclude_merchants:
+        lines.append(f"🚫 {', '.join(display_rule.exclude_merchants)}")
+    return "\n".join(lines)
+
+
+def listing_summary(active, inactive) -> str:
+    active_word = "alerta activa" if active == 1 else "alertas activas"
+    inactive_word = "inactiva" if inactive == 1 else "inactivas"
+    return f"{active} {active_word} · {inactive} {inactive_word}"
+
+
+def format_alert_list(rows, rule_loader) -> str:
+    """Render the canonical alert list for Telegram and the CLI."""
+    if not rows:
+        return "🔔 Tus alertas\n\nNo tienes alertas configuradas."
+    blocks = []
+    for row in rows:
+        try:
+            rule = rule_loader(row)
+        except (ValueError, TypeError):
+            rule = None
+        blocks.append(format_listing_line(row, rule))
+    active = sum(bool(row[6]) for row in rows)
+    return (
+        "🔔 Tus alertas\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n"
+        + listing_summary(active, len(rows) - active)
+    )
 
 
 def price_suffix(price_unit):
@@ -485,17 +552,7 @@ class TelegramRuleController:
 
     def _format(self, intent, rows, baseline_count=None):
         if intent.action == "list":
-            if not rows:
-                return "🔔 Tus alertas\n\nNo tienes alertas configuradas."
-            blocks = [self._listing_line(row) for row in rows]
-            active = sum(bool(row[6]) for row in rows)
-            inactive = len(rows) - active
-            return (
-                "🔔 Tus alertas\n\n"
-                + "\n\n".join(blocks)
-                + "\n\n"
-                + self._listing_summary(active, inactive)
-            )
+            return format_alert_list(rows, self._stored_rule)
         verb = {
             "create": "Alerta creada",
             "update": "Alerta actualizada",
@@ -537,32 +594,11 @@ class TelegramRuleController:
         the legacy `max_price` column cannot tell an alert without a price from
         a price of zero, and a temperature-only alert has no price at all.
         """
-        rule = self._stored_rule(row)
-        if rule is None:
-            return (
-                f"{'✅' if row[6] else '⏸️'} #{row[0]} · {_display_words(row[1])}\n"
-                f"💶 {self._legacy_price(row)}"
-            )
-        lines = [
-            f"{'✅' if row[6] else '⏸️'} #{row[0]} · {alert_display_name(rule, row[1])}"
-        ]
-        price = listing_price_line(rule.constraints)
-        if price:
-            lines.append(price)
-        temperature = listing_temperature_line(rule.constraints)
-        if temperature:
-            lines.append(temperature)
-        if rule.include_merchants:
-            lines.append(f"🏪 {', '.join(rule.include_merchants)}")
-        if rule.exclude_merchants:
-            lines.append(f"🚫 {', '.join(rule.exclude_merchants)}")
-        return "\n".join(lines)
+        return format_listing_line(row, self._stored_rule(row))
 
     @staticmethod
     def _listing_summary(active, inactive):
-        active_word = "alerta activa" if active == 1 else "alertas activas"
-        inactive_word = "inactiva" if inactive == 1 else "inactivas"
-        return f"{active} {active_word} · {inactive} {inactive_word}"
+        return listing_summary(active, inactive)
 
     def _stored_rule(self, row):
         if self.repository is None:
@@ -577,6 +613,4 @@ class TelegramRuleController:
     @staticmethod
     def _legacy_price(row):
         """The legacy price column of a row, or "sin precio" when it has none."""
-        if row[4] in (None, "", "None"):
-            return "sin precio"
-        return f"Menos de {_spanish_amount(row[4])} {price_suffix(row[5])}"
+        return legacy_listing_price(row)
