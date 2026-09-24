@@ -158,7 +158,7 @@ class ReplayEngine:
         alert_rule = self.load_rule(rule_id)
         interest_rule = interest_rule_from_alert(alert_rule)
         candidates = self.repository.historical_deals(
-            query_terms(alert_rule.query), category=alert_rule.category
+            query_terms(alert_rule.query or ""), category=alert_rule.category
         )
         selected = candidates if limit is None or limit <= 0 else candidates[:limit]
         results = []
@@ -181,7 +181,7 @@ class ReplayEngine:
             )
         return ReplayResult(
             rule_id=rule_id,
-            query=alert_rule.query,
+            query=alert_rule.query or "",
             product=alert_rule.product,
             brand=alert_rule.brand,
             constraints=alert_rule.constraints,

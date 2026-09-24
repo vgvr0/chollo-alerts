@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .categories import normalize_category
 from .schedule import default_timezone, validate_timezone
 
 
@@ -83,6 +84,20 @@ class AlertConstraints(BaseModel):
             "máximo."
         ),
     )
+    category_include: tuple[str, ...] = Field(default=())
+    category_exclude: tuple[str, ...] = Field(default=())
+    max_age_minutes: float | None = Field(default=None, gt=0)
+
+    @field_validator("category_include", "category_exclude", mode="before")
+    @classmethod
+    def clean_categories(cls, value):
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            value = (value,)
+        return tuple(
+            normalize_category(item) for item in value if normalize_category(item)
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -124,8 +139,8 @@ class AlertRule(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(
-        min_length=1,
+    query: str | None = Field(
+        default=None,
         description=(
             "Solo el término de búsqueda del producto, corto y sin relleno "
             "(por ejemplo 'zapatillas'). Nunca incluyas precio, moneda ni la "

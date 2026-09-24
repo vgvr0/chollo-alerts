@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from .categories import category_matches, normalize_category
 from .config import InterestRule
 from .merchants import (
     MERCHANT_EXCLUDED,
@@ -152,6 +153,36 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
     def verdict(accepted, reason):
         return FilterResult(accepted, reason, tuple(checks))
 
+    if rule.category_exclude:
+        if any(
+            category_matches(deal.categories, value)
+            or normalize_category(deal.category) == value
+            for value in rule.category_exclude
+        ):
+            return verdict(False, "REJECTED_CATEGORY_EXCLUDED")
+        checks.append(
+            ConditionCheck(
+                "CATEGORY_EXCLUDED",
+                "Sin categorías excluidas",
+                ", ".join(rule.category_exclude),
+            )
+        )
+    if rule.category_include:
+        matched = next(
+            (
+                value
+                for value in rule.category_include
+                if category_matches(deal.categories, value)
+                or normalize_category(deal.category) == value
+            ),
+            None,
+        )
+        if matched is None:
+            return verdict(False, "REJECTED_CATEGORY_NOT_ALLOWED")
+        checks.append(
+            ConditionCheck("CATEGORY_INCLUDED", "Categoría permitida", matched)
+        )
+
     if rule.product_type:
         extracted = getattr(extraction, "product_type", None)
         if not product_type_matches(rule.product_type, extracted):
@@ -179,6 +210,9 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
         and rule.min_volume_l is None
         and rule.temperature_min is None
         and rule.temperature_max is None
+        and not rule.category_include
+        and not rule.category_exclude
+        and rule.max_age_minutes is None
     )
     specific_query = rule.query and (
         len(product_tokens(rule.query)) > 1
@@ -333,6 +367,23 @@ def apply_rule(deal: Deal, rule: InterestRule) -> FilterResult:
                     f"{format_number(rule.temperature_max)}°",
                 )
             )
+    if rule.max_age_minutes is not None:
+        from datetime import UTC, datetime
+
+        if deal.published_at is None:
+            return verdict(False, "REJECTED_UNKNOWN_AGE")
+        age = (
+            datetime.now(UTC) - deal.published_at.astimezone(UTC)
+        ).total_seconds() / 60
+        if age > rule.max_age_minutes or age < 0:
+            return verdict(False, "REJECTED_AGE")
+        checks.append(
+            ConditionCheck(
+                "MAX_AGE",
+                "Antigüedad máxima",
+                f"{format_number(age)} min ≤ {format_number(rule.max_age_minutes)} min",
+            )
+        )
     merchant_result, merchant_checks = merchant_decision(deal.merchant, rule)
     if not merchant_result.accepted:
         return verdict(False, merchant_result.reason)

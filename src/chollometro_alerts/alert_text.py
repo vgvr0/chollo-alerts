@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import cast
 
 from .alert_rule import AlertConstraints
 from .alert_rule import NotificationWindow as RuleNotificationWindow
@@ -453,6 +454,61 @@ def extract_temperature_mentions(text: str) -> TemperatureMentions:
     return TemperatureMentions(minimum, maximum)
 
 
+_CATEGORY_ALIASES = {
+    "informatica": "informatica",
+    "informática": "informatica",
+    "alimentacion": "alimentacion",
+    "alimentación": "alimentacion",
+    "supermercado": "supermercado",
+    "supermercados": "supermercado",
+    "moda": "moda",
+    "electronica": "electronica",
+    "electrónica": "electronica",
+    "telefonia": "telefonia",
+    "telefonía": "telefonia",
+}
+
+
+@dataclass(frozen=True)
+class CategoryMentions:
+    included: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+
+
+def extract_max_age_minutes(text: str) -> float | None:
+    """Read explicit freshness phrases without asking the LLM to do arithmetic."""
+    folded = (text or "").casefold()
+    if re.search(r"\b(?:la\s+)?(?:última|ultima)\s+hora\b", folded):
+        return 60.0
+    match = re.search(
+        r"(?:hace\s+menos\s+de|últimos?|ultimos?)\s+(\d+(?:[.,]\d+)?)\s*(minutos?|mins?|horas?|h)",
+        folded,
+    )
+    if match is None:
+        return None
+    value = float(match.group(1).replace(",", "."))
+    return value * 60 if match.group(2).startswith(("hora", "h")) else value
+
+
+def extract_category_mentions(text: str) -> CategoryMentions:
+    """Read the small, explicit Chollometro category vocabulary deterministically."""
+    folded = text.casefold()
+    found = [
+        (word, key)
+        for word, key in _CATEGORY_ALIASES.items()
+        if re.search(rf"\b{re.escape(word)}\b", folded)
+    ]
+    excluded_words = re.compile(r"(?:no|nada de|sin|excepto|salvo|pero no)\s*$")
+    included: list[str] = []
+    excluded: list[str] = []
+    for word, key in found:
+        position = folded.find(word)
+        target = excluded if excluded_words.search(folded[:position]) else included
+        if key not in target:
+            target.append(key)
+    return CategoryMentions(tuple(included), tuple(excluded))
+
+
 def ambiguity_error(text: str) -> str | None:
     """The clarification to ask when a vague period has no concrete hours."""
     period = vague_period(text)
@@ -475,6 +531,8 @@ def merge_intent(intent, text: str):
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
     temperature = extract_temperature_mentions(text)
+    categories = extract_category_mentions(text)
+    max_age = extract_max_age_minutes(text)
     updates: dict[str, object] = {}
     if mentions.allowed:
         updates["include_merchants"] = list(mentions.allowed)
@@ -484,6 +542,12 @@ def merge_intent(intent, text: str):
         updates["temperature_min"] = temperature.minimum
     if temperature.maximum is not None:
         updates["temperature_max"] = temperature.maximum
+    if categories.included:
+        updates["category_include"] = list(categories.included)
+    if categories.excluded:
+        updates["category_exclude"] = list(categories.excluded)
+    if max_age is not None:
+        updates["max_age_minutes"] = max_age
     if window is not None:
         updates["notify_window_start"] = f"{window.start:%H:%M}"
         updates["notify_window_end"] = f"{window.end:%H:%M}"
@@ -499,6 +563,8 @@ def merge_rule(rule, text: str):
     mentions = extract_merchant_mentions(text)
     window = extract_notification_window(text)
     temperature = extract_temperature_mentions(text)
+    categories = extract_category_mentions(text)
+    max_age = extract_max_age_minutes(text)
     updates: dict[str, object] = {}
     if mentions.allowed:
         updates["include_merchants"] = tuple(mentions.allowed)
@@ -520,6 +586,23 @@ def merge_rule(rule, text: str):
             }
         )
         updates["constraints"] = constraints
+    if categories.included or categories.excluded:
+        constraints = cast(
+            AlertConstraints, updates.get("constraints", rule.constraints)
+        )
+        updates["constraints"] = constraints.model_copy(
+            update={
+                "category_include": categories.included or constraints.category_include,
+                "category_exclude": categories.excluded or constraints.category_exclude,
+            }
+        )
+    if max_age is not None:
+        constraints = cast(
+            AlertConstraints, updates.get("constraints", rule.constraints)
+        )
+        updates["constraints"] = constraints.model_copy(
+            update={"max_age_minutes": max_age}
+        )
     if window is not None:
         updates["notification_window"] = RuleNotificationWindow(
             start=window.start, end=window.end, timezone=window.timezone

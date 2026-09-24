@@ -136,6 +136,18 @@ def format_listing_line(row, rule) -> str:
     temperature = listing_temperature_line(display_rule.constraints)
     if temperature:
         lines.append(temperature)
+    if display_rule.constraints.category_include:
+        lines.append(
+            f"🗂️ Categoría: {', '.join(display_rule.constraints.category_include)}"
+        )
+    if display_rule.constraints.category_exclude:
+        lines.append(
+            f"🚫 Categoría: {', '.join(display_rule.constraints.category_exclude)}"
+        )
+    if display_rule.constraints.max_age_minutes is not None:
+        lines.append(
+            f"🕒 Máximo {format_number(display_rule.constraints.max_age_minutes)} min de antigüedad"
+        )
     if not price and not temperature:
         lines.append("🔎 Cualquier oferta nueva")
     if display_rule.include_merchants:
@@ -230,6 +242,14 @@ def alert_detail_lines(intent) -> list[str]:
     temperature = temperature_condition(intent.temperature_min, intent.temperature_max)
     if temperature:
         lines.append(f"🌡️ Temperatura: {temperature}")
+    if getattr(intent, "category_include", None):
+        lines.append(f"🗂️ Categorías: {', '.join(intent.category_include)}")
+    if getattr(intent, "category_exclude", None):
+        lines.append(f"🚫 Sin categorías: {', '.join(intent.category_exclude)}")
+    if getattr(intent, "max_age_minutes", None) is not None:
+        lines.append(
+            f"🕒 Antigüedad máxima: {format_number(intent.max_age_minutes)} min"
+        )
     if intent.include_merchants or intent.exclude_merchants:
         shops = ", ".join(intent.include_merchants or ("cualquier tienda",))
         if intent.exclude_merchants:
@@ -352,6 +372,10 @@ class TelegramRuleController:
                     row
                     for row in rows
                     if row[1] == (intent.query or intent.product_type or intent.brand)
+                    or (
+                        not row[1]
+                        and not (intent.query or intent.product_type or intent.brand)
+                    )
                 ),
                 None,
             )
@@ -371,7 +395,7 @@ class TelegramRuleController:
                 "INITIALIZING",
                 "INITIALIZING_FAILED",
             }:
-                baseline_count = self.service.baseline_rule(rule[0], query)
+                baseline_count = self.service.baseline_rule(rule[0], query or "")
                 rows = self.repository.list_alert_rules()
         if intent.action == "list":
             self._remember_alerts([row[0] for row in rows])
@@ -494,6 +518,13 @@ class TelegramRuleController:
         for name in ("temperature_min", "temperature_max"):
             if name in AlertIntent.model_fields:
                 fields[name] = getattr(constraints, name, None)
+        for name in ("category_include", "category_exclude", "max_age_minutes"):
+            if name in AlertIntent.model_fields:
+                fields[name] = (
+                    list(getattr(constraints, name, ()))
+                    if name != "max_age_minutes"
+                    else getattr(constraints, name)
+                )
         return AlertIntent(**fields)
 
     def _remember_alerts(self, rule_ids):
@@ -579,7 +610,9 @@ class TelegramRuleController:
             "enable": "Alerta activada",
             "disable": "Alerta desactivada",
         }[intent.action]
-        subject = intent.query or intent.product_type or intent.brand or "alerta"
+        subject = (
+            intent.query or intent.product_type or intent.brand or "cualquier chollo"
+        )
         if intent.action in {"create", "update"}:
             conditions = []
             if intent.max_price is not None:
@@ -594,6 +627,14 @@ class TelegramRuleController:
                 # With a price, "… y al menos 250°" completes the sentence; on
                 # its own, it needs the preposition the price condition gave it.
                 conditions.append(temperature if conditions else f"con {temperature}")
+            if intent.category_include:
+                conditions.append(f"de {', '.join(intent.category_include)}")
+            if intent.category_exclude:
+                conditions.append(f"excepto {', '.join(intent.category_exclude)}")
+            if intent.max_age_minutes is not None:
+                conditions.append(
+                    f"publicado hace menos de {format_number(intent.max_age_minutes)} min"
+                )
             reply = f"✅ {verb}: {subject}"
             if conditions:
                 reply += " " + " y ".join(conditions)

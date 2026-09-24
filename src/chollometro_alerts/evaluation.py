@@ -60,6 +60,9 @@ def interest_rule_from_alert(alert_rule: AlertRule) -> InterestRule:
         temperature_min=constraints.temperature_min,
         temperature_max=constraints.temperature_max,
         query=alert_rule.query,
+        category_include=constraints.category_include,
+        category_exclude=constraints.category_exclude,
+        max_age_minutes=constraints.max_age_minutes,
     )
 
 
