@@ -11,7 +11,11 @@ from chollometro_alerts.models import Deal
 from chollometro_alerts.parser import parse_search
 from chollometro_alerts.pricing import PricingEngine
 from chollometro_alerts.product import extract_product
-from chollometro_alerts.repository import DealRepository
+from chollometro_alerts.repository import (
+    EXTRACTION_CACHE_VERSION,
+    DealRepository,
+    extraction_fingerprint,
+)
 from chollometro_alerts.service import AlertService
 
 
@@ -154,6 +158,51 @@ def test_content_fingerprint_rejects_stale_extraction(tmp_path):
     )
     assert (
         service.repository.get_extraction("123", product_text="Pack cerveza San Miguel")
+        is None
+    )
+
+
+def test_extraction_cache_requires_current_fingerprint_and_algorithm_version(tmp_path):
+    service, _ = make_service(tmp_path)
+    text = "Repelente Ultrasónico 6 Pack"
+    extraction = {"product_type": None, "units": 1, "unit_volume_l": "10"}
+    service.repository.save_extraction("repellent", extraction, product_text=text)
+
+    assert (
+        service.repository.get_extraction("repellent", product_text=text) == extraction
+    )
+    assert (
+        service.repository.get_extraction(
+            "repellent", product_text="Repelente Ultrasónico 8 Pack"
+        )
+        is None
+    )
+
+    service.repository.db.execute(
+        "UPDATE product_extractions SET extractor_version=? WHERE deal_id=?",
+        ("product-extraction-v1", "repellent"),
+    )
+    service.repository.db.commit()
+    assert service.repository.get_extraction("repellent", product_text=text) is None
+    assert EXTRACTION_CACHE_VERSION == "product-extraction-v2"
+
+
+def test_invalid_historical_extraction_is_not_reused(tmp_path):
+    service, _ = make_service(tmp_path)
+    text = "Repelente Ultrasónico 6 Pack"
+    service.repository.db.execute(
+        "INSERT INTO product_extractions VALUES (?,?,?,?)",
+        (
+            "historical-invalid",
+            '{"units": 1, "unit_volume_l": "10", "total_volume_l": "10"}',
+            extraction_fingerprint(text),
+            "product-extraction-v1",
+        ),
+    )
+    service.repository.db.commit()
+
+    assert (
+        service.repository.get_extraction("historical-invalid", product_text=text)
         is None
     )
 

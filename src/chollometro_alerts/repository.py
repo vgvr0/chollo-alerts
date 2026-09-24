@@ -9,8 +9,8 @@ from decimal import Decimal
 from .alert_rule import AlertConstraints, AlertRule
 from .intent import AlertIntent
 from .models import Deal
-from .retention import RetentionResult
 from .product import product_tokens
+from .retention import RetentionResult
 
 DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
 
@@ -23,7 +23,9 @@ FEED_WATERMARK_KEY = "newest_published_at"
 # NULL) but stay distinguishable: a hard delivery failure is not the same as a
 # delivery the alert's own notification schedule is deliberately holding back.
 PENDING_TELEGRAM_FAILURE = "TELEGRAM_FAILURE"
-EXTRACTION_CACHE_VERSION = "product-extraction-v1"
+# Bump this whenever extraction semantics change.  A content fingerprint alone
+# cannot invalidate facts produced by an older algorithm for the same title.
+EXTRACTION_CACHE_VERSION = "product-extraction-v2"
 
 
 def extraction_fingerprint(product_text: str) -> str:
