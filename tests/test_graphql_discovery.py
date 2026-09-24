@@ -392,6 +392,48 @@ def test_a_window_without_overlap_is_the_risk_signal(tmp_path, caplog):
     assert notifier.sent_ids == ["new-0", "new-1", "new-2"]
 
 
+def test_more_than_one_window_can_be_lost_without_recovery(tmp_path, caplog):
+    """A burst larger than the feed window leaves the middle permanently unseen."""
+    baseline = [historical(f"known-{index}") for index in range(WINDOW_SIZE)]
+    burst = [
+        make_deal(f"burst-{index}", AFTER + timedelta(minutes=index))
+        for index in range(40)
+    ]
+    later = [
+        make_deal(f"later-{index}", AFTER + timedelta(minutes=40 + index))
+        for index in range(30)
+    ]
+    # The endpoint's second answer contains only the newest 30 of the burst.
+    feed = FakeFeed(baseline, burst[10:], later)
+    service, repository, notifier, _extractor = make_service(tmp_path, feed)
+    add_rule(repository)
+
+    service.run_active_rules()
+    with caplog.at_level(logging.WARNING):
+        service.run_active_rules()
+        service.run_active_rules()
+
+    risks = [
+        record.message
+        for record in caplog.records
+        if record.message.startswith("feed_window_risk")
+    ]
+    assert len(risks) == 2
+    assert all("overlap=0" in message for message in risks)
+    assert repository.seen_feed_thread_ids() >= {
+        *(f"known-{index}" for index in range(WINDOW_SIZE)),
+        *(f"burst-{index}" for index in range(10, 40)),
+        *(f"later-{index}" for index in range(30)),
+    }
+    assert not repository.seen_feed_thread_ids(
+        [f"burst-{index}" for index in range(10)]
+    )
+    assert set(notifier.sent_ids) == {
+        *(f"burst-{index}" for index in range(10, 40)),
+        *(f"later-{index}" for index in range(30)),
+    }
+
+
 def test_a_new_thread_arriving_inside_the_window_is_not_a_risk(tmp_path, caplog):
     """Partial overlap is the healthy steady state: new threads plus known ones."""
     baseline = [historical(f"known-{index}") for index in range(3)]
