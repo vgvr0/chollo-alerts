@@ -102,7 +102,7 @@ class DealRepository:
                 db.execute(f"ALTER TABLE product_extractions ADD COLUMN {name} TEXT")
         db.execute(
             """CREATE TABLE IF NOT EXISTS alert_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT,
             product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
             price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
             state TEXT NOT NULL DEFAULT 'ACTIVE',
@@ -148,8 +148,34 @@ class DealRepository:
             db.execute(
                 "ALTER TABLE rule_deal_observations ADD COLUMN pending_reason TEXT"
             )
-        # Migrate databases created before rule states existed.
+        # Migrate databases created before rule states existed. Generic hot
+        # deal rules use NULL query, so old NOT NULL tables are rebuilt while
+        # copying every legacy row unchanged.
         columns = {row[1] for row in db.execute("PRAGMA table_info(alert_rules)")}
+        query_not_null = next(
+            row[3]
+            for row in db.execute("PRAGMA table_info(alert_rules)")
+            if row[1] == "query"
+        )
+        if query_not_null:
+            if "state" not in columns:
+                db.execute(
+                    "ALTER TABLE alert_rules ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'"
+                )
+            db.execute("ALTER TABLE alert_rules RENAME TO alert_rules_legacy")
+            db.execute("""CREATE TABLE alert_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT,
+                product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
+                price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(query, product_type, brand, max_price, price_unit))""")
+            db.execute("""INSERT INTO alert_rules
+                (id,query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at)
+                SELECT id,query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at
+                FROM alert_rules_legacy""")
+            db.execute("DROP TABLE alert_rules_legacy")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(alert_rules)")}
         if "state" not in columns:
             db.execute(
                 "ALTER TABLE alert_rules ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'"
@@ -223,7 +249,7 @@ class DealRepository:
             return self.list_alert_rules()
         query = intent.query or intent.product_type or intent.brand
         row = self.db.execute(
-            "SELECT id FROM alert_rules WHERE query=? AND COALESCE(brand,'')=COALESCE(?, '')",
+            "SELECT id FROM alert_rules WHERE query IS ? AND COALESCE(brand,'')=COALESCE(?, '')",
             (query, intent.brand),
         ).fetchone()
         # A temperature-only alert has no price at all. The legacy column is
@@ -238,7 +264,7 @@ class DealRepository:
         legacy_unit = intent.price_unit or "absolute"
         if intent.action == "create":
             duplicate = self.db.execute(
-                "SELECT 1 FROM alert_rules WHERE query=? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
+                "SELECT 1 FROM alert_rules WHERE query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
                 (
                     query,
                     intent.product_type,
@@ -431,7 +457,14 @@ class DealRepository:
         never stores anything. `terms` are matched (case-insensitively) against
         the stored title, which is the local text available for old deals.
         """
-        rows = list(self._related_deal_rows([t.casefold() for t in terms if t]))
+        normalized_terms = [t.casefold() for t in terms if t]
+        rows = list(self._related_deal_rows(normalized_terms))
+        if not normalized_terms and not category:
+            rows = list(
+                self.db.execute(
+                    f"SELECT {DEAL_COLUMNS} FROM deals ORDER BY first_seen_at DESC, deal_id DESC"
+                )
+            )
         seen = {row[0] for row in rows}
         if category:
             for row in self.db.execute(

@@ -248,6 +248,9 @@ class InterestRule:
     product_type: str | None = None
     brand: str | None = None
     query: str | None = None
+    category_include: tuple[str, ...] = ()
+    category_exclude: tuple[str, ...] = ()
+    max_age_minutes: float | None = None
 
 
 _INTEREST_RULE_ALIASES = {"min_temperature": "temperature_min"}

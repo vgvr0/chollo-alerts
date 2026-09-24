@@ -216,7 +216,7 @@ class AlertService:
         extractor = self.extractor if self.extractor is not None else create_extractor()
         initial_metrics = dict(getattr(extractor, "metrics", {}))
         try:
-            deals = self.client.recent([query], pages)
+            deals = self.client.recent([query or ""], pages)
         except ChollometroError as exc:
             # A provider failure is never an empty result set. Any other
             # exception is a programming error and keeps propagating.
@@ -386,7 +386,7 @@ class AlertService:
     def baseline_rule(self, rule_id, query, pages=1):
         """Record the current result set for one rule without evaluating or notifying."""
         try:
-            deals = self.client.recent([query], pages)
+            deals = self.client.recent([query or ""], pages)
             for deal in deals:
                 self.repository.upsert(deal)
                 self.repository.claim_rule_observation(
