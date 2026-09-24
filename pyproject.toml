@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",
     "beautifulsoup4>=4.12",
-    "pydantic>=2.0",
+    "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     # `zoneinfo` reads the IANA database from the system; Windows does not ship
     # it, and the notification windows are defined in a real timezone
