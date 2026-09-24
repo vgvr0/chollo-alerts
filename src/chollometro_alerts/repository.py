@@ -9,6 +9,7 @@ from decimal import Decimal
 from .alert_rule import AlertConstraints, AlertRule
 from .intent import AlertIntent
 from .models import Deal
+from .product import product_tokens
 
 DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
 
@@ -453,6 +454,13 @@ class DealRepository:
         if row[7]:
             return AlertRule.model_validate_json(row[7])
         _, query, product, brand, maximum, unit, _, _ = row
+        # Pre-structured rows have no separate product column. Preserve their
+        # positive query relevance when it is an unambiguous one-word subject;
+        # generic shopping queries remain intentionally product-less.
+        if product is None and brand is None and query:
+            tokens = product_tokens(query)
+            if len(tokens) == 1 and tokens[0] not in {"oferta", "ofertas"}:
+                product = query
         kwargs = {}
         if unit == "liter":
             kwargs["max_price_per_liter"] = Decimal(maximum)
