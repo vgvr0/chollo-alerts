@@ -55,6 +55,7 @@ def test_listing_uses_structured_identity_and_icons(tmp_path):
     assert "✅ #1 · Lagavulin" in text
     assert "Lagavulin pr" not in text
     assert "⏸️ #2 · Zapatillas ASICS" in text
+    assert "⏸️ Inactiva: #2 · Zapatillas ASICS" in text
 
 
 def test_listing_formats_absolute_and_per_liter_prices(tmp_path):
@@ -74,6 +75,8 @@ def test_listing_formats_absolute_and_per_liter_prices(tmp_path):
 
     assert "💶 Menos de 1.000,00 €" in text
     assert "💶 Menos de 0,79 €/L" in text
+    assert "Inactiva:" not in text
+    assert "Inactivas:" not in text
 
 
 def test_listing_shows_optional_filters_and_summary(tmp_path):
@@ -100,4 +103,33 @@ def test_listing_shows_optional_filters_and_summary(tmp_path):
     assert "🚫 AliExpress" in text
     assert "🔥 Temperatura: 100°–300°" in text
     assert "1 alerta activa · 1 inactiva" in text
+    assert "⏸️ Inactiva: #2 · Relojes" in text
     assert "None" not in text
+
+
+def test_listing_groups_multiple_inactive_alerts_in_deterministic_order(tmp_path):
+    repository = DealRepository(tmp_path / "alerts.sqlite3")
+    save(
+        repository,
+        query="zapatillas",
+        constraints=AlertConstraints(max_price=Decimal(200)),
+        enabled=False,
+    )
+    save(
+        repository,
+        query="televisores",
+        constraints=AlertConstraints(max_price=Decimal(500)),
+        enabled=False,
+    )
+    save(
+        repository,
+        query="whisky",
+        constraints=AlertConstraints(max_price=Decimal(30)),
+    )
+
+    text = listing(repository)
+
+    assert "1 alerta activa · 2 inactivas" in text
+    assert "⏸️ Inactivas: #1 · Zapatillas, #2 · Televisores" in text
+    assert "⏸️ #1 · Zapatillas" in text
+    assert "⏸️ #2 · Televisores" in text

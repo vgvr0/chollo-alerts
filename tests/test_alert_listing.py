@@ -12,6 +12,7 @@ from decimal import Decimal
 from chollometro_alerts import cli
 from chollometro_alerts.alert_rule import AlertConstraints, AlertRule
 from chollometro_alerts.repository import DealRepository
+from chollometro_alerts.telegram_rules import format_alert_list
 
 TABLES = (
     "deals",
@@ -152,7 +153,8 @@ def test_alert_list_shows_legacy_and_structured_rules_exactly_once(
     assert f"✅ #{legacy_id} · Leche" in text
     assert f"⏸️ #{structured_id} · Coca-Cola" in text
     assert text.count("· Leche") == 1
-    assert text.count("· Coca-Cola") == 1
+    assert text.count("· Coca-Cola") == 2
+    assert "⏸️ Inactiva: #2 · Coca-Cola" in text
 
 
 def test_alert_list_sees_the_same_rules_as_telegram(monkeypatch, tmp_path, capsys):
@@ -179,9 +181,27 @@ def test_alert_list_sees_the_same_rules_as_telegram(monkeypatch, tmp_path, capsy
     listed_ids = [
         int(line.split("#", 1)[1].split(" ", 1)[0])
         for line in lines
-        if "#" in line and line.startswith(("✅", "⏸️"))
+        if "#" in line and line.startswith(("✅ #", "⏸️ #"))
     ]
     assert listed_ids == telegram_view
+
+
+def test_cli_and_telegram_render_the_same_inactive_summary(
+    monkeypatch, tmp_path, capsys
+):
+    repository = DealRepository(tmp_path / "rules.sqlite3")
+    insert_rule(repository, query="leche", product_type="leche")
+    insert_rule(repository, query="zapatillas", product_type="zapatillas", enabled=0)
+    insert_rule(repository, query="televisores", product_type="televisores", enabled=0)
+
+    lines = run_alert_list(monkeypatch, capsys, repository.path)
+    cli_text = "\n".join(lines)
+    telegram_text = format_alert_list(
+        repository.list_alert_rules(), repository.rule_from_listing
+    )
+
+    assert cli_text == telegram_text
+    assert "⏸️ Inactivas: #2 · Zapatillas, #3 · Televisores" in cli_text
 
 
 # --- Legacy price semantics stay untouched ----------------------------------
