@@ -1,9 +1,12 @@
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
 from .evaluation import MatchEvidence
 from .models import Deal, format_amount
+from .schedule import as_aware_utc, default_timezone
 
 TRANSIENT_TELEGRAM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
@@ -79,6 +82,17 @@ def _temperature(value) -> str:
     return f"{value}°" if value is not None else "N/D"
 
 
+def _published_label(published_at: datetime | None) -> str | None:
+    """Render the provider publication instant in the app's local timezone."""
+    if published_at is None:
+        return None
+    try:
+        local = as_aware_utc(published_at).astimezone(ZoneInfo(default_timezone()))
+    except (TypeError, ValueError):
+        return None
+    return f"🕒 Publicado: {local:%H:%M}"
+
+
 def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
     """The Telegram message: the deal, the alert that matched and why.
 
@@ -95,6 +109,9 @@ def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
         f"🏪 Tienda: {deal.merchant or 'N/D'}",
         f"🔥 Temperatura: {_temperature(deal.temperature)}",
     ]
+    published_label = _published_label(deal.published_at)
+    if published_label is not None:
+        lines.append(published_label)
     if evidence is not None:
         alert = (evidence.alert_text or evidence.query).strip()
         if alert:
