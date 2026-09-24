@@ -18,7 +18,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["types-requests>=2.31", "pip-audit>=2.9"]
+dev = [
+    "mypy>=1.11",
+    "pip-audit>=2.9",
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "types-requests>=2.31",
+]
 
 [project.scripts]
 chollometro-alerts = "chollometro_alerts.cli:main"
