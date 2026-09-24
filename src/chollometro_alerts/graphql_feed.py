@@ -61,6 +61,7 @@ from urllib.parse import unquote
 
 import requests
 
+from .categories import CategoryRef
 from .client import RATE_LIMIT_STATUS, RETRYABLE_STATUS
 from .config import (
     GRAPHQL_DEFAULT_WINDOW,
@@ -262,6 +263,18 @@ def thread_to_deal(thread: dict, source_query: str = "") -> Deal | None:
         for group in thread.get("groups") or []
         if isinstance(group, dict)
     ]
+    category_refs = tuple(
+        CategoryRef(
+            id=str(group.get("threadGroupId"))
+            if group.get("threadGroupId") is not None
+            else None,
+            slug=group.get("threadGroupUrlName"),
+            name=group.get("threadGroupName"),
+        )
+        for group in (thread.get("groups") or [])
+        if isinstance(group, dict)
+        and (group.get("threadGroupId") or group.get("threadGroupName"))
+    )
     temperature = thread.get("temperature")
     product_text = " ".join(
         part
@@ -284,6 +297,7 @@ def thread_to_deal(thread: dict, source_query: str = "") -> Deal | None:
         source_query=source_query,
         status=thread.get("status"),
         is_expired=thread.get("isExpired"),
+        categories=category_refs,
     )
 
 

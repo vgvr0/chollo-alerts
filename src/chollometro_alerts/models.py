@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from .categories import CategoryRef
+
 
 @dataclass(frozen=True)
 class Deal:
@@ -30,6 +32,9 @@ class Deal:
     # the HTML parser leaves them unset and no rule consumes them yet.
     status: str | None = None
     is_expired: bool | None = None
+    # Structured GraphQL groups.  The legacy `category` field remains intact
+    # for HTML/old rules; new category rules use these stable provider facts.
+    categories: tuple[CategoryRef, ...] = ()
 
 
 def format_amount(value: Decimal | int | None) -> str:

@@ -100,6 +100,9 @@ class AlertIntent(BaseModel):
     brand: str | None = Field(
         default=None, description="Marca mencionada explícitamente, o null."
     )
+    category_include: list[str] | None = Field(default=None)
+    category_exclude: list[str] | None = Field(default=None)
+    max_age_minutes: float | None = Field(default=None, gt=0)
     max_price: Decimal | None = Field(
         default=None,
         ge=0,
@@ -207,16 +210,37 @@ class AlertIntent(BaseModel):
         names = [str(name).strip() for name in value if str(name).strip()]
         return names or None
 
+    @field_validator("category_include", "category_exclude")
+    @classmethod
+    def clean_categories(cls, value):
+        if not value:
+            return None
+        from .categories import normalize_category
+
+        values = [
+            normalize_category(item) for item in value if normalize_category(item)
+        ]
+        return values or None
+
 
 def validate_intent(intent: AlertIntent) -> AlertIntent:
     if intent.action == "list":
         return intent
-    if not (intent.query or intent.product_type or intent.brand):
+    if not (
+        intent.query
+        or intent.product_type
+        or intent.brand
+        or intent.category_include
+        or intent.category_exclude
+    ):
         raise ValueError("Falta el producto o la marca")
     if (intent.max_price is not None) != (intent.price_unit is not None):
         raise ValueError("Falta el precio máximo y su unidad")
-    if (intent.has_price or intent.has_temperature) and (
-        intent.query or intent.product_type or intent.brand
+    if (
+        intent.has_price
+        or intent.has_temperature
+        or intent.category_include
+        or intent.category_exclude
     ):
         return intent
     if not has_specific_relevance(intent):
@@ -238,19 +262,27 @@ def intent_to_rule(intent: AlertIntent) -> AlertRule:
     if intent.rule is not None and not query:
         return intent.rule
     if not query:
-        raise ValueError("Falta el producto o la marca")
+        query = None
     constraints = AlertConstraints()
     if intent.max_price is not None:
-        kwargs = {"max_price": intent.max_price}
         if intent.price_unit == "liter":
-            kwargs = {"max_price_per_liter": intent.max_price}
+            constraints = AlertConstraints(
+                max_price_per_liter=intent.max_price,
+                temperature_min=intent.temperature_min,
+                temperature_max=intent.temperature_max,
+            )
         elif intent.price_unit == "unit":
-            kwargs = {"max_price_per_unit": intent.max_price}
-        constraints = AlertConstraints(
-            **kwargs,
-            temperature_min=intent.temperature_min,
-            temperature_max=intent.temperature_max,
-        )
+            constraints = AlertConstraints(
+                max_price_per_unit=intent.max_price,
+                temperature_min=intent.temperature_min,
+                temperature_max=intent.temperature_max,
+            )
+        else:
+            constraints = AlertConstraints(
+                max_price=intent.max_price,
+                temperature_min=intent.temperature_min,
+                temperature_max=intent.temperature_max,
+            )
     elif intent.has_temperature:
         # A temperature-only alert is a complete rule: it needs no price.
         constraints = AlertConstraints(
@@ -263,8 +295,14 @@ def intent_to_rule(intent: AlertIntent) -> AlertRule:
         brand=intent.brand,
         include_merchants=tuple(intent.include_merchants or ()),
         exclude_merchants=tuple(intent.exclude_merchants or ()),
+        constraints=constraints.model_copy(
+            update={
+                "category_include": tuple(intent.category_include or ()),
+                "category_exclude": tuple(intent.category_exclude or ()),
+                "max_age_minutes": intent.max_age_minutes,
+            }
+        ),
         notification_window=notification_window(intent),
-        constraints=constraints,
     )
 
 

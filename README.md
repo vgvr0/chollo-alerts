@@ -457,6 +457,37 @@ published_at > alert.created_at ?
 
 This makes it possible to monitor products continuously without ever notifying a deal that already existed when the alert was created.
 
+## 🗂️ Categorías y hot deals
+
+El feed GraphQL ya devuelve los grupos estructurados del chollo. Esta versión
+usa exactamente `groups.threadGroupId`, `groups.threadGroupName` y
+`groups.threadGroupUrlName`; no clasifica la categoría con el LLM ni hace una
+petición adicional por oferta. También usa `temperature`, `publishedAt`,
+`merchant.merchantName`, `status` e `isExpired` del mismo objeto `thread`.
+
+Las reglas guardan `constraints.category_include` y
+`constraints.category_exclude`, normalizadas por identificador/slug/nombre, y
+`constraints.max_age_minutes`. Todas son condiciones AND junto con las
+restricciones existentes. Ejemplos de Telegram:
+
+* `Avísame de informática con más de 250°`
+* `Cualquier chollo con más de 400°`
+* `Alimentación con más de 150° publicado hace menos de 2 horas`
+* `Solo supermercado`
+* `Nada de moda`
+
+Una regla hot deal puede no tener `query`; se asocia a su propio `rule_id` y
+no reutiliza el selector de categoría histórico. La antigüedad se compara con
+`publishedAt` real (UTC); si falta la fecha, no hay match. El baseline inicial
+marca las ofertas actuales como históricas, por lo que crear una alerta no
+notifica ofertas antiguas. El replay explícito sigue permitiendo evaluar el
+histórico local sin enviar Telegram.
+
+La ruta GraphQL sigue siendo el proveedor de descubrimiento de una petición por
+ciclo y, si falla, se conserva el fallback HTML. Las categorías estructuradas
+no están disponibles en todas las tarjetas HTML; en ese caso una condición de
+categoría no se puede demostrar y se rechaza de forma segura.
+
 ## 🏪 Shops: allowed and excluded merchants
 
 An alert may name the shops it wants and the ones it refuses:
