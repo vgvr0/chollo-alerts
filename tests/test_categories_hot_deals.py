@@ -12,6 +12,8 @@ from chollometro_alerts.config import InterestRule
 from chollometro_alerts.filters import apply_rule
 from chollometro_alerts.graphql_feed import thread_to_deal
 from chollometro_alerts.models import Deal
+from chollometro_alerts.repository import DealRepository
+from chollometro_alerts.service import FEED_SKIPPED, AlertService
 
 
 def deal(**changes):
@@ -111,3 +113,25 @@ def test_graphql_structured_group_fields_are_carried_without_extra_request():
     mapped = thread_to_deal(row)
     assert mapped.categories[0].id == "42"
     assert mapped.categories[0].slug == "informatica"
+
+
+def test_disabled_hot_deal_rule_is_not_scanned_or_notified(tmp_path):
+    class Feed:
+        def latest(self):
+            raise AssertionError("disabled rules must not fetch the feed")
+
+    class Notifier:
+        dry_run = False
+
+        def send(self, *_args, **_kwargs):
+            raise AssertionError("disabled rules must not notify")
+
+    repository = DealRepository(tmp_path / "alerts.sqlite3")
+    repository.save_alert_rule(
+        AlertRule(query=None, constraints=AlertConstraints(temperature_min=300)),
+        "hot deal",
+        enabled=False,
+    )
+    service = AlertService(object(), repository, Notifier(), feed=Feed())
+    assert service.run_active_rules() == 0
+    assert service.last_feed_status == FEED_SKIPPED
