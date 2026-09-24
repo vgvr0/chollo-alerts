@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from chollometro_alerts.config import InterestRule
 from chollometro_alerts.filters import apply_rule
 from chollometro_alerts.models import Deal
@@ -41,3 +43,17 @@ def test_milk_price_per_liter_rules():
         "y", "Leche Puleva", "https://y", Decimal(1), None, 999, "milk", None
     )
     assert apply_rule(unknown, rule).reason == "REJECTED_UNKNOWN_VOLUME"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "6 Pack repelentes",
+        "8 unidades pilas",
+        "12 rollos papel",
+        "10 bombillas",
+        "4 enchufes",
+    ),
+)
+def test_pack_count_is_not_volume(text):
+    assert extract_volume(text) is None
