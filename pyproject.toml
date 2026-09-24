@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["types-requests>=2.31"]
+dev = ["types-requests>=2.31", "pip-audit>=2.9"]
 
 [project.scripts]
 chollometro-alerts = "chollometro_alerts.cli:main"
