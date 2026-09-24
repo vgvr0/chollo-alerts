@@ -54,6 +54,35 @@ def test_nonzero_dedup_ttl_is_rejected(monkeypatch):
         RetentionSettings.from_env()
 
 
+def test_retention_disabled_skips_automatic_runs(tmp_path):
+    repository = repo(tmp_path)
+    disabled = settings(enabled=False)
+    assert (
+        RetentionService(repository, disabled, clock=lambda: NOW).run_if_due(NOW)
+        is None
+    )
+
+
+def test_cleanup_is_bounded_to_one_batch_per_category(tmp_path):
+    repository = repo(tmp_path)
+    old = NOW - timedelta(days=2)
+    repository.db.executemany(
+        "INSERT INTO deal_temperature_snapshots(thread_id,temperature,observed_at) VALUES (?,?,?)",
+        [(str(index), 10, old.isoformat()) for index in range(5)],
+    )
+    repository.db.commit()
+    result = RetentionService(
+        repository, settings(batch_size=2), clock=lambda: NOW
+    ).run(now=NOW)
+    assert result.deleted_snapshots == 2
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM deal_temperature_snapshots"
+        ).fetchone()[0]
+        == 3
+    )
+
+
 def test_prune_deletes_only_safe_old_history_and_preserves_critical_state(tmp_path):
     repository = repo(tmp_path)
     old = NOW - timedelta(days=60)
