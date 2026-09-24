@@ -13,6 +13,7 @@ from .config import (
     PROJECT_ROOT,
     ConfigurationError,
     GraphQLFeedSettings,
+    RetentionSettings,
     TelegramSettings,
     load_rules,
 )
@@ -33,6 +34,7 @@ from .replay import (
     RuleNotFoundError,
 )
 from .repository import DealRepository
+from .retention import RetentionService
 from .runtime import positive_interval, run_daemon
 from .service import AlertService
 from .telegram import DryRunNotifier, TelegramNotifier
@@ -227,6 +229,14 @@ def main():
     probe.add_argument("text", help="Texto del producto que se extraerá")
     sub.add_parser("telegram-poll", help="Procesar una tanda de órdenes de Telegram")
     sub.add_parser("telegram-listen", help="Escuchar órdenes de Telegram continuamente")
+    maintenance = sub.add_parser("maintenance", help="Mantenimiento seguro de SQLite")
+    maintenance_sub = maintenance.add_subparsers(
+        dest="maintenance_command", required=True
+    )
+    prune = maintenance_sub.add_parser("prune", help="Eliminar históricos no críticos")
+    prune.add_argument("--dry-run", action="store_true")
+    maintenance_sub.add_parser("status", help="Mostrar estado y candidatos de limpieza")
+    maintenance_sub.add_parser("vacuum", help="Compactar SQLite explícitamente")
     run_parser = sub.add_parser("run", help="Ejecutar listener y scanner continuamente")
     run_parser.add_argument("--interval-minutes", type=int, default=None)
     rules_parser = sub.add_parser("run-rules", help="Evaluar reglas activas")
@@ -254,6 +264,32 @@ def main():
         help="Máximo de deals históricos a evaluar (0 = sin límite)",
     )
     a = p.parse_args()
+    if a.command == "maintenance":
+        repository = DealRepository(a.db)
+        settings = RetentionSettings.from_env()
+        retention = RetentionService(repository, settings)
+        if a.maintenance_command == "prune":
+            result = retention.run(dry_run=a.dry_run)
+            print(f"DRY_RUN={str(result.dry_run).lower()}")
+            print(f"DELETED_SNAPSHOTS={result.deleted_snapshots}")
+            print(f"DELETED_CACHE_ENTRIES={result.deleted_cache_entries}")
+            print(f"DELETED_ERROR_HISTORY={result.deleted_error_history}")
+            print(f"DELETED_SCAN_RUNS={result.deleted_scan_runs}")
+            print(f"BATCHES={result.batches}")
+            return
+        if a.maintenance_command == "status":
+            counts = repository.retention_counts(settings)
+            status = repository.runtime_status()
+            print(f"DB_BYTES={os.path.getsize(a.db) if os.path.exists(a.db) else 0}")
+            print(
+                f"LAST_MAINTENANCE_AT={status.get('last_retention_finished_at') or 'NEVER'}"
+            )
+            for name, count in counts.items():
+                print(f"ELIGIBLE_{name.upper()}={count}")
+            return
+        repository.vacuum()
+        print("VACUUM=SUCCESS")
+        return
     if a.command == "health":
         raise SystemExit(health_check(a.db))
     if a.command == "alert":
