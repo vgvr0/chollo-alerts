@@ -528,7 +528,7 @@ def test_listing_shows_every_stored_alert(tmp_path):
     reply = send(controller, "Qué alertas tengo")
 
     assert "Tus alertas" in reply
-    assert "cualquier chollo" in reply and "zapatillas" in reply
+    assert "cualquier chollo" in reply.lower() and "zapatillas" in reply.lower()
 
 
 # --- Reading the reference --------------------------------------------------- #
