@@ -108,6 +108,20 @@ and the HTML provider stays available as the fallback.
   `sort` is accepted but does not change the order, so none of them is used.
 * **Switch**: `CHOLLOMETRO_GRAPHQL_DISCOVERY=false` restores the original
   HTML-only behaviour and never touches the GraphQL endpoint.
+* **Opt-in gap recovery**: with `GRAPHQL_GAP_RECOVERY_ENABLED=true`, a mature
+  GraphQL continuity-loss signal (zero persisted overlap or a watermark jump)
+  reads `/nuevos?page=N`
+  sequentially, using the same HTML parser and HTTP retry policy. It stops only
+  after finding a persisted `threadId`; the default budget is five pages
+  (`GRAPHQL_GAP_RECOVERY_MAX_PAGES`, valid range 1–20). This is recovery only,
+  not a replacement for GraphQL discovery.
+
+Gap recovery has explicit states: `NO_GAP`, `GAP_DETECTED`, `GAP_RECOVERING`,
+`GAP_RECOVERED`, `GAP_RECOVERY_INCOMPLETE` and `GAP_RECOVERY_FAILED`. Exhausting
+the page budget is incomplete, never recovered. Recovery candidates are
+deduplicated by `threadId` and ordered by `published_at`; numeric thread-id
+ordering is never assumed. The initial baseline never starts recovery, and a
+`PARTIAL` GraphQL scan still follows the existing fail-closed fallback path.
 
 ## 🛡️ Chollometro failure handling
 
@@ -162,6 +176,8 @@ start-up). The names and defaults below are the ones the code really uses
 | `CHOLLOMETRO_GRAPHQL_DISCOVERY` | `true` | Enables the GraphQL discovery feed. `false` keeps the HTML-only behaviour and never touches the endpoint. |
 | `CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT` | unset | Unset = the request sends no `limit` and the endpoint answers with its widest window (30 threads). A value between 1 and 20 asks for that many explicitly. Anything else is rejected at start-up. |
 | `CHOLLOMETRO_GRAPHQL_PATH` | `/graphql` | Endpoint path, relative to the site. |
+| `GRAPHQL_GAP_RECOVERY_ENABLED` | `false` | Enables bounded `/nuevos?page=N` recovery only after a mature GraphQL zero-overlap signal. |
+| `GRAPHQL_GAP_RECOVERY_MAX_PAGES` | `5` | Maximum sequential HTML pages per recovery attempt; valid range `1..20`. |
 | `CHOLLOMETRO_TIMEOUT_SECONDS` | `20` | Timeout of every Chollometro request. |
 | `CHOLLOMETRO_MAX_RETRIES` | `2` | Bounded retry budget (never retries 4xx or parse failures). |
 | `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` | `0.5` | Base of the exponential backoff. |
@@ -969,9 +985,9 @@ No reliable pagination was found for `threads`: it accepts only `filter` and
 `skip`, `start` or `pageInfo`. The only verified way to read past the newest
 window is to request ids explicitly with `threadId: {in: [...]}`, which requires
 knowing them beforehand; `gt`/`lt`/`ge`/`le` are accepted but ignored and `sort`
-is accepted but does not change the order. A future recovery pass could walk
-descending id windows from the oldest stored `threadId` until it overlaps the
-stored history, but nothing like that is implemented today.
+is accepted but does not change the order. Optional recovery uses the public
+HTML `/nuevos?page=N` pagination instead of guessing numeric IDs; it is bounded
+and stops only at a persisted thread boundary.
 
 ### HTML fallback is not equivalent
 
@@ -979,6 +995,16 @@ The fallback is the original HTML scan, run once per active rule: it only sees
 what each rule asks for, it depends on the page markup, and a partially failed
 scan is recorded as `PARTIAL`. A cycle served by the fallback does not have the
 same coverage as a GraphQL discovery cycle.
+
+### GraphQL gap recovery is separate from fallback
+
+When GraphQL fails, the existing per-alert HTML fallback runs. When GraphQL
+answers successfully but shows a continuity-loss signal, optional gap recovery
+reads `/nuevos?page=N` and feeds only the recovered, deduplicated
+deals through the normal evaluation and persistence path. It is disabled by
+default, bounded by `GRAPHQL_GAP_RECOVERY_MAX_PAGES`, and reports
+`GAP_RECOVERY_INCOMPLETE` if no persisted boundary is reached within that
+budget. A recovery failure is not treated as proof of continuity.
 
 ### The notification window is checked per cycle
 
