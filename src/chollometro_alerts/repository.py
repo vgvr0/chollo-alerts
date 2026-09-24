@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import threading
@@ -20,6 +21,14 @@ FEED_WATERMARK_KEY = "newest_published_at"
 # NULL) but stay distinguishable: a hard delivery failure is not the same as a
 # delivery the alert's own notification schedule is deliberately holding back.
 PENDING_TELEGRAM_FAILURE = "TELEGRAM_FAILURE"
+EXTRACTION_CACHE_VERSION = "product-extraction-v1"
+
+
+def extraction_fingerprint(product_text: str) -> str:
+    """Stable fingerprint for the text sent to the product extractor."""
+    return hashlib.sha256(product_text.strip().encode("utf-8")).hexdigest()
+
+
 PENDING_NOTIFICATION_SCHEDULE = "NOTIFICATION_SCHEDULE"
 
 
@@ -83,8 +92,14 @@ class DealRepository:
             "CREATE TABLE IF NOT EXISTS error_alerts (fingerprint TEXT PRIMARY KEY, error_type TEXT NOT NULL, component TEXT NOT NULL, message TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_notified_at TEXT, occurrence_count INTEGER NOT NULL)"
         )
         db.execute(
-            "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT PRIMARY KEY, payload TEXT NOT NULL, content_fingerprint TEXT, extractor_version TEXT)"
         )
+        extraction_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(product_extractions)")
+        }
+        for name in ("content_fingerprint", "extractor_version"):
+            if name not in extraction_columns:
+                db.execute(f"ALTER TABLE product_extractions ADD COLUMN {name} TEXT")
         db.execute(
             """CREATE TABLE IF NOT EXISTS alert_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
@@ -982,15 +997,33 @@ class DealRepository:
     def known_deal_ids(self):
         return {r[0] for r in self.db.execute("SELECT deal_id FROM deals")}
 
-    def get_extraction(self, deal_id):
+    def get_extraction(self, deal_id, product_text=None):
         row = self.db.execute(
-            "SELECT payload FROM product_extractions WHERE deal_id=?", (deal_id,)
+            "SELECT payload, content_fingerprint, extractor_version FROM product_extractions WHERE deal_id=?",
+            (deal_id,),
         ).fetchone()
-        return json.loads(row[0]) if row else None
+        if row is None:
+            return None
+        # Rows from before fingerprinting remain usable for callers that only
+        # know the deal id. New evaluations require a matching fingerprint;
+        # changed provider content must not inherit stale facts.
+        if product_text is not None and row[1] is not None:
+            if row[1] != extraction_fingerprint(product_text):
+                return None
+            if row[2] != EXTRACTION_CACHE_VERSION:
+                return None
+        return json.loads(row[0])
 
-    def save_extraction(self, deal_id, payload):
+    def save_extraction(self, deal_id, payload, product_text=None):
         self.db.execute(
-            "INSERT OR REPLACE INTO product_extractions VALUES (?,?)",
-            (deal_id, json.dumps(payload, default=str)),
+            "INSERT OR REPLACE INTO product_extractions VALUES (?,?,?,?)",
+            (
+                deal_id,
+                json.dumps(payload, default=str),
+                extraction_fingerprint(product_text)
+                if product_text is not None
+                else None,
+                EXTRACTION_CACHE_VERSION if product_text is not None else None,
+            ),
         )
         self.db.commit()

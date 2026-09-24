@@ -386,6 +386,25 @@ cycle ran), `last_scan_status`, `last_error`, `deals_seen`, `deals_matched` and
 `notifications_sent`, all of them taken from the counters the cycle already
 keeps (`RunSummary`, `scan_runs`).
 
+### LLM call observability
+
+The scan summary printed by `check`/the runtime includes `LLM_CALLS`,
+`LLM_SUCCESSES`, `LLM_FAILURES`, `LLM_CACHE_HITS`, `LLM_CACHE_MISSES`,
+`LLM_UNIQUE_DEALS`, `LLM_TOKENS` and `LLM_DURATION_SECONDS`. `LLM_CALLS` counts
+provider HTTP attempts (including retries); `LLM_UNIQUE_DEALS` counts deals that
+caused at least one provider attempt. Therefore a multi-rule scan can prove
+that `LLM_CALLS == LLM_UNIQUE_DEALS` for the no-duplicate case.
+
+Product extraction has two cache layers. The evaluator reuses one extraction
+for the same `(deal_id, product text)` during the process cycle, including
+read-only dry-runs. The SQLite `product_extractions` table is the persistent
+cache across cycles and restarts. New rows are keyed by `deal_id`, content
+fingerprint and `product-extraction-v1`; changed content invalidates the row.
+Legacy rows without a fingerprint remain readable by direct deal-id lookups,
+but are revalidated by new content-aware evaluations. There is no Prometheus
+endpoint or dependency in this project, so metrics remain in `RunSummary`, CLI
+output and structured logs.
+
 ## 💾 Persistence
 
 Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
