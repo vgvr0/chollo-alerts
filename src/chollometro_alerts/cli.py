@@ -19,6 +19,7 @@ from .config import (
 from .errors import SCAN_FAILED, ChollometroError
 from .graphql_feed import GraphQLFeedClient
 from .health import check as health_check
+from .legacy_rules import audit_legacy_rules, repair_legacy_rules
 from .llm import create_extractor
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
@@ -235,6 +236,12 @@ def main():
     for name in ("parse", "add"):
         command = alert_sub.add_parser(name)
         command.add_argument("text")
+    repair_parser = alert_sub.add_parser(
+        "legacy-repair", help="Auditar o reparar identidades de reglas legacy"
+    )
+    repair_parser.add_argument(
+        "--apply", action="store_true", help="Aplicar solo reparaciones SAFE"
+    )
     alert_sub.add_parser("list")
     replay_parser = alert_sub.add_parser(
         "test", help="Replay una regla contra los deals históricos ya guardados"
@@ -267,6 +274,27 @@ def main():
             except RuleNotFoundError as exc:
                 p.error(str(exc))
             print(format_replay(report))
+            return
+        if a.alert_command == "legacy-repair":
+            proposals = (
+                repair_legacy_rules(repository, dry_run=False)
+                if a.apply
+                else audit_legacy_rules(repository)
+            )
+            for proposal in proposals:
+                if proposal.classification == "STRUCTURED":
+                    action = "NO_CHANGE"
+                elif proposal.actionable:
+                    action = "UPDATED" if a.apply else "WOULD_UPDATE"
+                else:
+                    action = "MANUAL_REVIEW"
+                print(f"RULE #{proposal.rule_id}")
+                print(f"query: {proposal.query}")
+                print(f"classification: {proposal.classification}")
+                print(f"proposed brand: {proposal.brand or 'N/D'}")
+                print(f"confidence: {'SAFE' if proposal.actionable else 'MANUAL'}")
+                print(f"action: {action}")
+                print(f"reason: {proposal.reason}")
             return
         parser = DeepSeekAlertRuleParser(DeepSeekProductExtractor())
         try:
