@@ -182,6 +182,11 @@ def extract_product(
         "unit_weight_kg",
         "total_weight_kg",
     ):
+        # A model may identify a product, but it may not turn a pack count
+        # into litres. Volume facts are admissible only when the deterministic
+        # parser found an explicit supported volume unit in the title.
+        if field in {"unit_volume_l", "total_volume_l"} and not explicit_volume:
+            continue
         if (
             merged[field] is None
             and getattr(llm_result, field) is not None

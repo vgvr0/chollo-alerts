@@ -362,7 +362,10 @@ def test_legacy_rule_rows_still_evaluate_through_rule_from_row(tmp_path):
         price_unit="liter",
     )
     assert repository.load_alert_rule(rule_id) is None
-    deals = [pack_deal("cheap", "4.27"), pack_deal("expensive", "5.70")]
+    deals = [
+        pack_deal("cheap", "4.27", title="Pack leche 6 x 1L"),
+        pack_deal("expensive", "5.70", title="Pack leche 6 x 1L"),
+    ]
     report = AlertService(
         Client(deals),
         repository,
