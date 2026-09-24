@@ -107,21 +107,29 @@ def legacy_listing_price(row) -> str:
     return f"Menos de {_spanish_amount(row[4])} {price_suffix(row[5])}"
 
 
-def format_listing_line(row, rule) -> str:
-    """Render one alert for every read-only listing surface."""
+def listing_identity(row, rule) -> str:
+    """Render the stable id and human-readable name used by the listing."""
     if rule is None:
-        return (
-            f"{'✅' if row[6] else '⏸️'} #{row[0]} · {_display_words(row[1])}\n"
-            f"💶 {legacy_listing_price(row)}"
-        )
+        return f"#{row[0]} · {_display_words(row[1])}"
     # A partially repaired structured row may still have useful identity in
     # the legacy columns. Use it for display only; never write it back.
     display_rule = (
         rule.model_copy(update={"brand": row[3]}) if not rule.brand and row[3] else rule
     )
-    lines = [
-        f"{'✅' if row[6] else '⏸️'} #{row[0]} · {alert_display_name(display_rule, row[1])}"
-    ]
+    return f"#{row[0]} · {alert_display_name(display_rule, row[1])}"
+
+
+def format_listing_line(row, rule) -> str:
+    """Render one alert for every read-only listing surface."""
+    lines = [f"{'✅' if row[6] else '⏸️'} {listing_identity(row, rule)}"]
+    if rule is None:
+        lines.append(f"💶 {legacy_listing_price(row)}")
+        return "\n".join(lines)
+    # A partially repaired structured row may still have useful identity in
+    # the legacy columns. Use it for display only; never write it back.
+    display_rule = (
+        rule.model_copy(update={"brand": row[3]}) if not rule.brand and row[3] else rule
+    )
     price = listing_price_line(display_rule.constraints)
     if price:
         lines.append(price)
@@ -145,20 +153,29 @@ def format_alert_list(rows, rule_loader) -> str:
     """Render the canonical alert list for Telegram and the CLI."""
     if not rows:
         return "🔔 Tus alertas\n\nNo tienes alertas configuradas."
-    blocks = []
+    resolved_rows = []
     for row in rows:
         try:
             rule = rule_loader(row)
         except (ValueError, TypeError):
             rule = None
-        blocks.append(format_listing_line(row, rule))
+        resolved_rows.append((row, rule))
+    blocks = [format_listing_line(row, rule) for row, rule in resolved_rows]
     active = sum(bool(row[6]) for row in rows)
-    return (
+    inactive = len(rows) - active
+    result = (
         "🔔 Tus alertas\n\n"
         + "\n\n".join(blocks)
         + "\n\n"
-        + listing_summary(active, len(rows) - active)
+        + listing_summary(active, inactive)
     )
+    if inactive:
+        label = "Inactiva" if inactive == 1 else "Inactivas"
+        inactive_names = [
+            listing_identity(row, rule) for row, rule in resolved_rows if not row[6]
+        ]
+        result += f"\n⏸️ {label}: {', '.join(inactive_names)}"
+    return result
 
 
 def price_suffix(price_unit):
