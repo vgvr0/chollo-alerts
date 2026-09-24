@@ -58,6 +58,9 @@ jobs:
       - name: Run mypy
         run: mypy .
 
+      - name: Audit Python dependencies
+        run: pip-audit
+
   tests:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
