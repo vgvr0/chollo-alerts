@@ -171,6 +171,13 @@ start-up). The names and defaults below are the ones the code really uses
 | `HEALTH_STALE_AFTER_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 3, 15)` | Minutes without a finished scan before health becomes unhealthy. |
 | `HEALTH_STARTUP_GRACE_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 2, 5)` | Startup grace before a first completed scan is required. |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
+| `RETENTION_ENABLED` | `true` | Enables the daily cleanup of disposable history. Set to `false` to disable it. |
+| `RETENTION_SNAPSHOTS_HOURS` | `24` | Temperature snapshot TTL. This preserves the 60-minute momentum window with margin. |
+| `RETENTION_LLM_CACHE_DAYS` | `30` | TTL for the persistent extraction cache, joined to the deal's `first_seen_at`. |
+| `RETENTION_ERROR_HISTORY_DAYS` | `90` | TTL for operational error history. |
+| `RETENTION_SCAN_HISTORY_DAYS` | `90` | TTL for completed scan history. Failed/incomplete rows are retained until completed. |
+| `RETENTION_BATCH_SIZE` | `500` | Maximum rows deleted per short SQLite transaction. |
+| `RETENTION_INTERVAL_HOURS` | `24` | Minimum interval between automatic maintenance runs; persisted across restarts. |
 | `LLM_ENABLED` | `false` | Enables the DeepSeek extraction fallback. |
 | `LLM_PROVIDER` | `deepseek` | Only supported provider. |
 | `DEEPSEEK_API_KEY` | — | Required when `LLM_ENABLED=true`. |
@@ -424,6 +431,33 @@ Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
 
 `feed_threads` is what makes "only new deals" true: a `threadId` present there is
 never evaluated again, whichever provider saw it first.
+
+### Retención y mantenimiento
+
+El daemon ejecuta una limpieza como máximo una vez al día (el momento queda
+guardado en `runtime_status`, por lo que un reinicio no la repite
+innecesariamente). Solo se eliminan históricos prescindibles: snapshots de
+temperatura de más de 24 horas, caché LLM antigua, errores operativos y runs de
+escaneo completados. Las operaciones usan lotes pequeños e índices dedicados.
+
+Nunca se eliminan automáticamente reglas, contexto de usuarios, `feed_threads`,
+deals, matches, observaciones ni notificaciones pendientes. En particular,
+`feed_threads` se conserva indefinidamente porque su existencia es la garantía
+de que un thread antiguo no vuelva a aparecer como nuevo. Los valores por
+defecto son conservadores y no cambian el comportamiento de instalaciones
+existentes.
+
+La limpieza se puede inspeccionar o ejecutar manualmente:
+
+```powershell
+chollometro-alerts maintenance status
+chollometro-alerts maintenance prune --dry-run
+chollometro-alerts maintenance prune
+```
+
+`--dry-run` solo cuenta candidatos. `maintenance vacuum` ejecuta un `VACUUM`
+explícito para recuperar espacio físico después de borrar filas; no se ejecuta
+automáticamente porque puede bloquear y requiere espacio temporal adicional.
 
 Both additions are **additive and optional**: the new columns and the two new
 fields of the structured rule are only written when they are used, and a
