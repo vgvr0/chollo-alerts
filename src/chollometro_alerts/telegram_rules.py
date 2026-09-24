@@ -307,6 +307,17 @@ class TelegramRuleController:
         message = update.get("message") or {}
         if update_id is None:
             return None
+        chat = message.get("chat") or {}
+        chat_type = chat.get("type")
+        if chat_type is not None and chat_type != "private":
+            self.current_chat_id = str(chat.get("id", self.authorized_chat_id))
+            if self.multiuser_enabled:
+                self.send_message(
+                    "🤖 Este bot está disponible únicamente por chat privado."
+                )
+            return None
+        if self.multiuser_enabled and not TelegramUserResolver.is_allowed_chat(update):
+            return None
         if (
             not self.multiuser_enabled
             and str(message.get("chat", {}).get("id")) != self.authorized_chat_id

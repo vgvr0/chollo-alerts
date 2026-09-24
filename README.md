@@ -444,6 +444,9 @@ son solo metadatos. Los usuarios desconocidos reciben un rechazo mientras
 `TELEGRAM_AUTO_REGISTER=false` (la política recomendada para una instalación
 cerrada). El comando administrativo `chollometro-alerts users` muestra el id,
 destino, estado y número de reglas sin exponer metadatos innecesarios.
+El modo multiusuario acepta únicamente updates cuyo `message.chat.type` sea
+`private`; grupos, supergrupos, canales y tipos desconocidos se rechazan antes
+de resolver identidad, auto-registrar usuarios o ejecutar el LLM.
 
 La migración integrada de SQLite crea `legacy/default` usando
 `TELEGRAM_CHAT_ID` y, si existe, `TELEGRAM_USER_ID`, y asigna las reglas

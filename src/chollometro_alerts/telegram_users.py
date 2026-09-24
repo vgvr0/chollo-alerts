@@ -23,6 +23,14 @@ class TelegramUserResolver:
         )
 
     @staticmethod
+    def is_allowed_chat(update, *, allow_missing=False):
+        """Private chats only; unknown Telegram chat types are denied."""
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_type = chat.get("type")
+        return chat_type == "private" or (allow_missing and chat_type is None)
+
+    @staticmethod
     def identity_from_update(update):
         message = update.get("message") or {}
         sender = message.get("from") or {}
@@ -36,6 +44,8 @@ class TelegramUserResolver:
         )
 
     def resolve(self, update):
+        if not self.is_allowed_chat(update, allow_missing=not self.enabled):
+            return None
         identity = self.identity_from_update(update)
         if identity is None:
             if not self.enabled:

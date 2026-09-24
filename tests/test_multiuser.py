@@ -27,6 +27,12 @@ def update(update_id, user_id, chat_id, text):
     }
 
 
+def typed_update(update_id, user_id, chat_id, chat_type, text):
+    value = update(update_id, user_id, chat_id, text)
+    value["message"]["chat"]["type"] = chat_type
+    return value
+
+
 def test_legacy_seven_rules_are_assigned_once(monkeypatch, tmp_path):
     path = tmp_path / "legacy.sqlite3"
     db = sqlite3.connect(path)
@@ -108,12 +114,59 @@ def test_unknown_multiuser_is_rejected_and_known_user_can_list(tmp_path):
         auto_register=False,
     )
     assert (
-        controller.process_update(update(1, "99", "chat-x", "Qué alertas tengo"))
+        controller.process_update(
+            typed_update(1, "99", "chat-x", "private", "Qué alertas tengo")
+        )
         is None
     )
     assert "No tienes acceso" in replies[-1]
-    assert controller.process_update(update(2, "42", "chat-a", "Qué alertas tengo"))
+    assert controller.process_update(
+        typed_update(2, "42", "chat-a", "private", "Qué alertas tengo")
+    )
     assert "leche" in replies[-1].casefold()
+
+
+def test_private_only_policy_rejects_non_private_updates_before_resolution(tmp_path):
+    repository = DealRepository(tmp_path / "private-only.sqlite3")
+    users_before = len(repository.list_users())
+    rules_before = len(repository.list_alert_rules())
+    known = repository.create_user(telegram_user_id="42", telegram_chat_id="chat-a")
+    repository.save_alert_rule(rule("leche"), "leche", user_id=known.id)
+    replies = []
+
+    class Translator:
+        def interpret_alert(self, _text):
+            raise AssertionError("group updates must not reach the LLM")
+
+    class Controller(TelegramRuleController):
+        def send_message(self, text):
+            replies.append(text)
+
+    controller = Controller(
+        bot_token="token",
+        authorized_chat_id="legacy",
+        repository=repository,
+        translator=Translator(),
+        multiuser_enabled=True,
+        auto_register=True,
+    )
+    for index, chat_type in enumerate(("group", "supergroup", "channel"), start=1):
+        assert (
+            controller.process_update(
+                typed_update(
+                    index,
+                    "unknown",
+                    f"{chat_type}-chat",
+                    chat_type,
+                    "Avísame de crear alerta",
+                )
+            )
+            is None
+        )
+    assert len(repository.list_users()) == users_before + 1
+    assert len(repository.list_alert_rules()) == rules_before + 1
+    assert len(repository.db.execute("SELECT * FROM telegram_updates").fetchall()) == 0
+    assert all("únicamente por chat privado" in message for message in replies)
 
 
 def test_notifier_routes_by_rule_owner(monkeypatch, tmp_path):
