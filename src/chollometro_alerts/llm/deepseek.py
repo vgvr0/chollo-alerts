@@ -45,7 +45,8 @@ class DeepSeekProductExtractor:
         if not math.isfinite(self.timeout) or self.timeout <= 0 or self.retries < 0:
             raise ConfigurationError("DeepSeek requiere timeout > 0 y retries >= 0")
         self.session = session or requests.Session()
-        self.llm_calls = self.llm_failures = 0
+        self.llm_calls = self.llm_failures = self.llm_successes = 0
+        self.duration_seconds = 0.0
         self.tokens = 0
         self.usage = {
             "input_tokens": 0,
@@ -113,6 +114,7 @@ class DeepSeekProductExtractor:
                 IndexError,
                 AttributeError,
             ) as exc:
+                self.duration_seconds += perf_counter() - started
                 # Never log exception messages, response bodies or request headers.
                 # They can contain credentials or product text.
                 self.last_error = type(exc).__name__
@@ -136,6 +138,8 @@ class DeepSeekProductExtractor:
                 self.llm_failures += 1
                 return extract_product(product_text)
             self.last_error = None
+            self.duration_seconds += perf_counter() - started
+            self.llm_successes += 1
             logger.info(
                 "deal_id=%s DeepSeek status=SUCCESS duration_seconds=%.3f tokens=%s attempt=%s",
                 deal_id or "N/D",
@@ -298,6 +302,8 @@ class DeepSeekProductExtractor:
         return {
             "LLM_CALLS": self.llm_calls,
             "LLM_FAILURES": self.llm_failures,
+            "LLM_SUCCESSES": self.llm_successes,
+            "LLM_DURATION_SECONDS": self.duration_seconds,
             "LLM_TOKENS": self.tokens,
             "LLM_INPUT_TOKENS": self.usage["input_tokens"],
             "LLM_CACHED_TOKENS": self.usage["cached_tokens"],

@@ -200,6 +200,9 @@ class DealEvaluator:
         self.repository = repository
         self.pricing = pricing if pricing is not None else PricingEngine()
         self.interest = interest if interest is not None else InterestEngine()
+        # Per-service-cycle reuse also covers dry-runs and concurrent rule
+        # loops where durable persistence is intentionally disabled.
+        self._cycle_extractions = {}
 
     def evaluate(
         self,
@@ -222,11 +225,27 @@ class DealEvaluator:
         reserved for extractions that were really asked for.
         """
         known = self.repository.exists(deal.deal_id)
-        cached = self.repository.get_extraction(deal.deal_id)
+        product_text = deal.product_text or deal.title
+        cache_key = (deal.deal_id, product_text)
+        cached = self._cycle_extractions.get(cache_key)
+        if cached is None:
+            try:
+                cached = self.repository.get_extraction(
+                    deal.deal_id, product_text=product_text
+                )
+            except TypeError:
+                # Small repository doubles used by integrations may still
+                # implement the pre-fingerprint one-argument API.
+                cached = self.repository.get_extraction(deal.deal_id)
         if cached is not None:
-            extraction = normalize_product_extraction(
-                ProductExtraction.model_validate(cached)
+            extraction = (
+                cached
+                if isinstance(cached, ProductExtraction)
+                else normalize_product_extraction(
+                    ProductExtraction.model_validate(cached)
+                )
             )
+            self._cycle_extractions[cache_key] = extraction
             from_cache = True
         else:
             verdict, merchant_checks = merchant_decision(deal.merchant, rule)
@@ -244,15 +263,21 @@ class DealEvaluator:
                     False,
                 )
             extraction = extract_product(
-                deal.product_text or deal.title,
+                product_text,
                 llm=None if known else extractor,
                 deal_id=deal.deal_id,
             )
             from_cache = False
+            self._cycle_extractions[cache_key] = extraction
             if persist_extraction:
-                self.repository.save_extraction(
-                    deal.deal_id, extraction.model_dump(mode="json")
-                )
+                payload = extraction.model_dump(mode="json")
+                try:
+                    self.repository.save_extraction(
+                        deal.deal_id, payload, product_text=product_text
+                    )
+                except TypeError:
+                    # Backward-compatible repository doubles and adapters.
+                    self.repository.save_extraction(deal.deal_id, payload)
         priced = self.pricing.evaluate(deal, extraction)
         result = self.interest.evaluate(priced, rule)
         return DealEvaluation(priced, extraction, rule, result, known, from_cache)

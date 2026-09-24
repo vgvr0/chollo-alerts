@@ -123,6 +123,41 @@ def test_second_execution_uses_persistent_cache_even_for_rejected_deals(
     second.notifier.send.assert_not_called()
 
 
+def test_same_deal_against_multiple_rules_calls_llm_once(tmp_path):
+    service, session = make_service(tmp_path)
+    for query in ("cerveza", "mah0u"):
+        service.repository.db.execute(
+            "INSERT INTO alert_rules(query, product_type, max_price, price_unit, enabled, created_at, updated_at) VALUES (?,?,?, ?,1,'x','x')",
+            (query, "beer", "100", "absolute"),
+        )
+    service.repository.db.commit()
+
+    # Dry-run intentionally does not persist facts. The evaluator's cycle
+    # cache must still prevent one provider request per rule.
+    service.dry_run_active_rules()
+
+    assert session.calls == 1
+    assert service.last_summary.llm_calls == 1
+    assert service.last_summary.llm_unique_deals == 1
+    assert service.last_summary.llm_cache_hits == 1
+
+
+def test_content_fingerprint_rejects_stale_extraction(tmp_path):
+    service, _ = make_service(tmp_path)
+    extraction = {"product_type": "beer"}
+    service.repository.save_extraction(
+        "123", extraction, product_text="Pack cerveza Mahou"
+    )
+    assert (
+        service.repository.get_extraction("123", product_text="Pack cerveza Mahou")
+        == extraction
+    )
+    assert (
+        service.repository.get_extraction("123", product_text="Pack cerveza San Miguel")
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "invalid",
     [{"price": 1}, [], {**payload(), "units": -1}, {**payload(), "confidence": 3}],

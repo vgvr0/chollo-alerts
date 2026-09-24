@@ -63,7 +63,11 @@ def test_deepseek_json_is_validated_and_tokens_counted():
     assert result.brand == "Mahou"
     assert extractor.metrics == {
         "LLM_CALLS": 1,
+        "LLM_SUCCESSES": 1,
         "LLM_FAILURES": 0,
+        "LLM_DURATION_SECONDS": pytest.approx(
+            extractor.metrics["LLM_DURATION_SECONDS"]
+        ),
         "LLM_TOKENS": 17,
         "LLM_INPUT_TOKENS": 0,
         "LLM_CACHED_TOKENS": 0,

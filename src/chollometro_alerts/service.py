@@ -101,9 +101,13 @@ class RunSummary:
     hybrid_count: int = 0
     before_alert: int = 0
     llm_calls: int = 0
+    llm_successes: int = 0
     llm_cache_hits: int = 0
+    llm_cache_misses: int = 0
+    llm_unique_deals: int = 0
     llm_failures: int = 0
     llm_tokens: int = 0
+    llm_duration_seconds: float = 0.0
     # Matches kept pending by an alert's notification window, and pending
     # deliveries that are still outside their window. Neither is an error.
     deferred: int = 0
@@ -119,9 +123,13 @@ class RunSummary:
             "llm_count",
             "hybrid_count",
             "llm_calls",
+            "llm_successes",
             "llm_cache_hits",
+            "llm_cache_misses",
+            "llm_unique_deals",
             "llm_failures",
             "llm_tokens",
+            "llm_duration_seconds",
             "telegram_sent",
         )
         return "\n".join(f"{name.upper()}={getattr(self, name)}" for name in fields)
@@ -444,6 +452,7 @@ class AlertService:
         # closed, is delivered here even when the deal has already left the
         # scanned page.
         total = self._deliver_pending_notifications(rules)
+        cycle_summary = self.last_summary
         statuses = []
         for rule_id, alert_rule, rule in rules:
             total += self.run_rule(
@@ -452,11 +461,26 @@ class AlertService:
                 rule=rule,
                 pages=pages,
             )
+            cycle_summary = self._merge_summaries(cycle_summary, self.last_summary)
             statuses.append(self.last_scan_status)
         # One status per cycle: a single failed rule is never reported as a
         # completely successful cycle.
         self.last_scan_status = worst_scan_status(statuses)
+        self.last_summary = cycle_summary
         return total
+
+    @staticmethod
+    def _merge_summaries(left, right):
+        """Add per-rule counters into one scan-cycle summary."""
+        merged = RunSummary(
+            scan_status=right.scan_status,
+            scan_error_type=right.scan_error_type,
+        )
+        for field in RunSummary.__dataclass_fields__:
+            if field in {"scan_status", "scan_error_type"}:
+                continue
+            setattr(merged, field, getattr(left, field) + getattr(right, field))
+        return merged
 
     def _record_evaluation(self, evaluation, extractor, initial_metrics):
         """Counters shared by the HTML scans and the GraphQL discovery cycle."""
@@ -464,10 +488,24 @@ class AlertService:
         if evaluation.from_cache:
             self.extraction_cache_hits += 1
             self.last_summary.llm_cache_hits += 1
-        for field in ("llm_calls", "llm_failures", "llm_tokens"):
+        else:
+            self.last_summary.llm_cache_misses += 1
+        deltas = {}
+        for field in (
+            "llm_calls",
+            "llm_successes",
+            "llm_failures",
+            "llm_tokens",
+            "llm_duration_seconds",
+        ):
             key = field.upper()
             value = getattr(extractor, "metrics", {}).get(key, 0)
-            setattr(self.last_summary, field, value - initial_metrics.get(key, 0))
+            delta = value - initial_metrics.get(key, 0)
+            setattr(self.last_summary, field, getattr(self.last_summary, field) + delta)
+            deltas[field] = delta
+            initial_metrics[key] = value
+        if deltas.get("llm_calls", 0) > 0:
+            self.last_summary.llm_unique_deals += 1
         source_count = f"{evaluation.extraction.extraction_source}_count"
         setattr(
             self.last_summary,
@@ -953,6 +991,7 @@ class AlertService:
         """
         report = []
         statuses = []
+        cycle_summary = RunSummary()
         for rule_id, alert_rule in self._active_alert_rules():
             report.extend(
                 self.run_rule(
@@ -963,8 +1002,10 @@ class AlertService:
                     dry_run=True,
                 )
             )
+            cycle_summary = self._merge_summaries(cycle_summary, self.last_summary)
             statuses.append(self.last_scan_status)
         self.last_scan_status = worst_scan_status(statuses)
+        self.last_summary = cycle_summary
         return report
 
     def notify_error(

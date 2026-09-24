@@ -23,6 +23,7 @@ def test_metrics_are_per_run_and_cached_sources_are_counted(tmp_path):
         1,
     )
     assert (summary.llm_calls, summary.llm_tokens, summary.llm_failures) == (1, 17, 0)
+    assert (summary.llm_successes, summary.llm_unique_deals) == (1, 1)
     assert summary.llm_cache_hits == 0
 
     service.run(["cerveza"])
@@ -36,6 +37,20 @@ def test_metrics_are_per_run_and_cached_sources_are_counted(tmp_path):
     assert (summary.llm_calls, summary.llm_tokens, summary.llm_failures) == (0, 0, 0)
     assert summary.llm_cache_hits == 1
     assert session.calls == 1
+
+
+def test_scan_metrics_keep_calls_unique_to_each_deal(tmp_path):
+    service, session = make_service(
+        tmp_path, responses=[Response(payload()), Response(payload())]
+    )
+    first = service.client.recent()[0]
+    service.client.recent.return_value = [first, replace(first, deal_id="124")]
+    service.run(["cerveza"])
+
+    assert session.calls == 2
+    assert service.last_summary.llm_calls == 2
+    assert service.last_summary.llm_unique_deals == 2
+    assert service.last_summary.llm_cache_hits == 0
 
 
 def test_metrics_include_rejected_deterministic_deals(tmp_path):
@@ -98,7 +113,9 @@ def test_check_dry_run_prints_details_then_all_metrics(monkeypatch, tmp_path, ca
     assert f"PRICE_PER_LITER={Decimal('12.50') / 6}" in output
     assert output.endswith(
         "FOUND=1\nNEW=1\nDETERMINISTIC_COUNT=1\nLLM_COUNT=0\nHYBRID_COUNT=0\n"
-        "LLM_CALLS=0\nLLM_CACHE_HITS=0\nLLM_FAILURES=0\nLLM_TOKENS=0\nTELEGRAM_SENT=0\n"
+        "LLM_CALLS=0\nLLM_SUCCESSES=0\nLLM_CACHE_HITS=0\nLLM_CACHE_MISSES=1\n"
+        "LLM_UNIQUE_DEALS=0\nLLM_FAILURES=0\nLLM_TOKENS=0\nLLM_DURATION_SECONDS=0.0\n"
+        "TELEGRAM_SENT=0\n"
     )
     assert not service.repository.was_notified("123")
 
@@ -129,5 +146,5 @@ def test_empty_check_prints_zero_metrics(monkeypatch, tmp_path, capsys):
     lines = capsys.readouterr().out.splitlines()
     # An empty-but-successful scan says so explicitly, next to its zero counters.
     assert lines[:2] == ["SCAN_STATUS=SUCCESS", "SCAN_ERROR_TYPE=N/D"]
-    assert len(lines) == 12
-    assert all(line.endswith("=0") for line in lines[2:])
+    assert len(lines) == 16
+    assert all(line.endswith(("=0", "=0.0")) for line in lines[2:])
