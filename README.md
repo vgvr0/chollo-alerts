@@ -167,6 +167,9 @@ start-up). The names and defaults below are the ones the code really uses
 | `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` | `0.5` | Base of the exponential backoff. |
 | `CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS` | `30` | Backoff cap. |
 | `SCAN_INTERVAL_MINUTES` | `10` | Delay between discovery cycles in `run` (overridden by `--interval-minutes`). |
+| `DATABASE_PATH` | `deals.sqlite3` locally; `/app/data/chollometro.sqlite3` in Compose | SQLite path. Compose mounts the host `./data` directory here. |
+| `HEALTH_STALE_AFTER_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 3, 15)` | Minutes without a finished scan before health becomes unhealthy. |
+| `HEALTH_STARTUP_GRACE_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 2, 5)` | Startup grace before a first completed scan is required. |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
 | `LLM_ENABLED` | `false` | Enables the DeepSeek extraction fallback. |
 | `LLM_PROVIDER` | `deepseek` | Only supported provider. |
@@ -181,11 +184,90 @@ start-up). The names and defaults below are the ones the code really uses
 > the 60-minute default, and an unusable one (`0`, a negative number, a text)
 > fails fast with a `ConfigurationError` instead of silently ignoring it.
 
-## Deployment
+## Run locally with Docker
 
-The supported managed deployment is a single Render **Background Worker** built
-from this repository's `Dockerfile`. It runs `chollometro-alerts run` as its
-main process and uses a 1 GB Render Persistent Disk mounted at `/data`.
+Esta es la opción recomendada para ejecución continua local. No requiere Render
+ni ningún proveedor cloud.
+
+1. Crea el archivo de configuración y rellena las credenciales:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+2. Arranca el servicio:
+
+   ```bash
+   docker compose up -d
+   docker compose ps
+   docker compose exec chollometro-alerts chollometro-alerts health
+   ```
+
+   El servicio debe aparecer como `Up (healthy)` y el health debe devolver
+   `STATUS=HEALTHY` después del primer scan (durante el arranque puede indicar
+   `STARTING`).
+
+3. Consulta los logs:
+
+   ```bash
+   docker compose logs -f
+   docker compose logs --tail=100
+   ```
+
+4. Operación habitual:
+
+   ```bash
+   docker compose restart
+   docker compose stop
+   docker compose start
+   docker compose down
+   ```
+
+   No uses `docker compose down -v`: la SQLite se conserva en `./data` y no
+   depende de un volumen Docker nombrado.
+
+La aplicación ejecuta `chollometro-alerts run` como usuario sin privilegios,
+con `restart: unless-stopped` y sin puertos publicados. La base de datos local
+está en `./data/chollometro.sqlite3` en el host y en
+`/app/data/chollometro.sqlite3` dentro del contenedor. El bind mount permite
+inspeccionarla, moverla y respaldarla fácilmente.
+
+### Backup y restore
+
+El backup usa la API SQLite `backup()` y puede ejecutarse mientras el daemon
+está activo:
+
+```powershell
+python scripts/backup_db.py
+```
+
+Genera `backups/chollometro-YYYYMMDD-HHMMSS.sqlite3`. Para restaurar, detén el
+servicio, conserva la base actual como copia de seguridad, sustituye la SQLite
+por el backup elegido y vuelve a arrancar:
+
+```bash
+docker compose stop
+# Sustituir ./data/chollometro.sqlite3 por el backup elegido
+docker compose start
+docker compose exec chollometro-alerts chollometro-alerts health
+```
+
+Mantén de forma sencilla entre 7 y 14 backups y elimina los más antiguos sólo
+después de comprobar que los recientes son legibles.
+
+Para que el contenedor se recupere tras cerrar y volver a abrir Docker Desktop,
+Docker Desktop debe estar configurado para iniciar sesión automáticamente y el
+contenedor debe conservar `restart: unless-stopped`. Para el reinicio de
+Windows, activa igualmente `Start Docker Desktop when you sign in`; después
+Docker Desktop recuperará el contenedor y su daemon. Comprueba el resultado con
+`docker compose ps` y `docker compose logs --tail=100`.
+
+## Deployment cloud opcional
+
+La configuración cloud opcional describe un único Render **Background Worker**
+construido desde el `Dockerfile` de este repositorio. Ejecuta
+`chollometro-alerts run` como proceso principal y usa un disco persistente de
+Render de 1 GB montado en `/data`.
 
 SQLite is deliberately single-instance: `numInstances: 1` is required, and
 multiple replicas or workers sharing this database are not supported. Render
@@ -224,7 +306,8 @@ health checks only for web and private services, not background workers. Treat
 the Docker healthcheck as a local/container check, not as a Render worker
 restart signal; Render worker restart behavior is managed by the service and
 the process exit/SIGTERM lifecycle.
-Locally, the equivalent is:
+Para ejecución local, usa exclusivamente la sección anterior. El equivalente
+histórico de Render es:
 
 ```bash
 docker compose up --build
@@ -254,42 +337,12 @@ source .venv/Scripts/activate      # Windows PowerShell: .venv\Scripts\Activate.
 pip install -e .
 ```
 
-### Docker
-
-La imagen ejecuta el daemon (`chollometro-alerts run`) como un usuario sin
-privilegios. Copia `.env.example` a `.env` y configura las credenciales en ese
-archivo o en el entorno del proceso; `.env` no se copia dentro de la imagen.
-
-```bash
-docker compose up -d
-docker compose logs -f
-docker compose down
-```
-
-Compose monta el volumen `chollometro-data` en `/data` y configura
-`DATABASE_PATH` como `/data/chollometro.sqlite3`, por lo que la SQLite sobrevive
-a la recreación del contenedor. También se puede cambiar `DATABASE_PATH` si se
-ejecuta la imagen directamente.
-
-El estado local se puede consultar sin red:
-
-```bash
-chollometro-alerts health
-docker compose ps
-```
-
 `HEALTHY` indica que la base es accesible y el daemon progresa; `DEGRADED`
 indica errores recientes con progreso todavía observable; `UNHEALTHY` indica
 que la base no está disponible o que el scanner lleva demasiado tiempo sin
 terminar. El umbral por defecto es `max(SCAN_INTERVAL_MINUTES * 3, 15)`
 minutos y admite `HEALTH_STALE_AFTER_MINUTES`; el arranque tiene una gracia de
 `max(SCAN_INTERVAL_MINUTES * 2, 5)` minutos.
-
-Create the configuration file from the example and fill in your secrets:
-
-```bash
-cp .env.example .env                # Windows: Copy-Item .env.example .env
-```
 
 `pytest` and `ruff` are the development tools used below; they are **not**
 declared as dependencies of `pyproject.toml`, so install them separately (for

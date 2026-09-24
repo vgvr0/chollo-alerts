@@ -206,6 +206,87 @@ def test_a_trailing_qualifier_is_rejected_by_the_rule():
     assert result.reason == "REJECTED_PRODUCT"
 
 
+def test_a_query_subject_is_a_hard_gate_before_price():
+    rule = InterestRule("generic", brand="Lagavulin", max_price=Decimal(50))
+    deal = priced(
+        ("skechers", "Zapatillas Skechers - Muchos modelos", "29.90"),
+        ProductExtraction(extraction_source="deterministic"),
+    )
+
+    result = apply_rule(deal, rule)
+
+    assert not result.accepted
+    assert result.reason == "REJECTED_BRAND"
+    assert [check.code for check in result.checks] == []
+
+
+@pytest.mark.parametrize(
+    ("title", "price", "accepted", "reason"),
+    [
+        ("Lagavulin 16 años", "47.90", True, "ACCEPTED"),
+        ("Lagavulin 8 años", "39.95", True, "ACCEPTED"),
+        ("Lagavulin 16 años", "58.00", False, "REJECTED_PRICE"),
+    ],
+)
+def test_query_subject_and_price_are_both_required(title, price, accepted, reason):
+    rule = InterestRule("generic", brand="Lagavulin", max_price=Decimal(50))
+    deal = priced(("lagavulin", title, price), ProductExtraction(brand="Lagavulin"))
+
+    result = apply_rule(deal, rule)
+
+    assert result.accepted is accepted
+    assert result.reason == reason
+    if accepted:
+        assert [check.code for check in result.checks] == ["BRAND", "MAX_PRICE"]
+
+
+def test_search_query_does_not_gate_a_structured_brand_match():
+    from chollometro_alerts.alert_rule import AlertConstraints, AlertRule
+    from chollometro_alerts.evaluation import interest_rule_from_alert
+
+    deal = priced(
+        ("asics-search", "ASICS Gel Nimbus 26", "89.00"),
+        ProductExtraction(brand="ASICS", extraction_source="deterministic"),
+    )
+    rule = interest_rule_from_alert(
+        AlertRule(
+            query="zapatillas",
+            brand="ASICS",
+            constraints=AlertConstraints(max_price=Decimal(100)),
+        )
+    )
+
+    result = apply_rule(deal, rule)
+
+    assert result.accepted
+    assert [check.code for check in result.checks] == ["BRAND", "MAX_PRICE"]
+
+
+def test_explicit_brand_is_still_required():
+    rule = asics_rule(max_price=Decimal(200))
+    wrong = priced(
+        ("nike", "Zapatillas Nike Pegasus", "59.99"),
+        ProductExtraction(product_type="Zapatillas", brand="Nike"),
+    )
+    right = priced(
+        ("asics", "ASICS Novablast", "108.75"),
+        ProductExtraction(product_type="Zapatillas", brand="ASICS"),
+    )
+
+    assert apply_rule(wrong, rule).reason == "REJECTED_BRAND"
+    assert apply_rule(right, rule).accepted
+
+
+def test_a_generic_category_rule_without_subject_still_matches():
+    deal = priced(
+        ("beer", "Cerveza Mahou", "0.80"),
+        ProductExtraction(product_type="cerveza"),
+    )
+    rule = InterestRule("beer", max_price=Decimal(1))
+
+    assert apply_rule(deal, rule).accepted
+
+
 # --- Parity: production, dry-run and replay keep agreeing -------------------
 
 

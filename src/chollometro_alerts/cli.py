@@ -19,6 +19,7 @@ from .config import (
 from .errors import SCAN_FAILED, ChollometroError
 from .graphql_feed import GraphQLFeedClient
 from .health import check as health_check
+from .llm import create_extractor
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .models import format_number
@@ -346,6 +347,7 @@ def main():
         except ConfigurationError as exc:
             p.error(f"Error de configuración: {exc}")
         repository = DealRepository(a.db)
+        extractor = create_extractor()
         service = None
         if a.command == "run":
             service = AlertService(
@@ -358,7 +360,7 @@ def main():
             bot_token=telegram.bot_token,
             authorized_chat_id=telegram.authorized_chat_id,
             repository=repository,
-            translator=DeepSeekProductExtractor(),
+            translator=extractor,
             service=service,
         )
         stop = threading.Event()
