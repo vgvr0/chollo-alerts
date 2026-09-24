@@ -167,6 +167,11 @@ class TelegramRuleController:
 
     def _handle_create_or_unknown(self, text):
         """The creation path, unchanged: interpret the sentence, then store it."""
+        if self.translator is None:
+            raise ValueError(
+                "la creación de alertas desde Telegram requiere LLM_ENABLED=true "
+                "y DEEPSEEK_API_KEY"
+            )
         # The merchant lists and the notification window are read from the
         # sentence itself before anything is persisted: they must never be
         # an invention of the model, and a vague period ("por la noche")

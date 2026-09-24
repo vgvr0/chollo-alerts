@@ -200,25 +200,23 @@ def test_the_production_scan_sends_that_same_explanation(tmp_path):
     assert "generic" not in message
 
 
-def test_a_price_only_match_shows_only_the_condition_it_evaluated(tmp_path):
-    deal = despertador(title="Cafetera de goteo 1,5 L")
+def test_a_price_only_condition_cannot_bypass_product_relevance(tmp_path):
+    deal = despertador(
+        deal_id="skechers-1", title="Zapatillas Skechers - Muchos modelos"
+    )
     service, repository, notifier = make_service(tmp_path, [deal])
     store_rule(
         repository,
-        query="cafetera",
+        query="Lagavulin",
+        brand="Lagavulin",
         constraints=AlertConstraints(max_price=Decimal(15)),
     )
     cache_extraction(
         repository, deal.deal_id, ProductExtraction(extraction_source="deterministic")
     )
 
-    assert service.run_active_rules() == 1
-
-    message = notifier.messages[0]
-    assert "• Precio máximo: 7,95 € < 15 €" in message
-    assert "Producto buscado" not in message
-    assert "Marca" not in message
-    assert [check.code for check in notifier.evidences[0].checks] == ["MAX_PRICE"]
+    assert service.run_active_rules() == 0
+    assert notifier.messages == []
 
 
 def test_an_llm_match_reports_the_model_supplied_fact_as_its_reason(tmp_path):

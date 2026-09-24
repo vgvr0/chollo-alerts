@@ -1,7 +1,7 @@
 from decimal import Decimal
 from unittest.mock import Mock
 
-from chollometro_alerts.intent import AlertIntent, validate_intent
+from chollometro_alerts.intent import AlertIntent, intent_to_rule, validate_intent
 from chollometro_alerts.repository import DealRepository
 
 
@@ -22,6 +22,21 @@ def test_intent_validation_and_ambiguity():
         pass
     else:
         raise AssertionError("ambiguous intent must be rejected")
+
+
+def test_explicit_brand_is_preserved_as_relevance_not_just_search_query():
+    rule = intent_to_rule(
+        AlertIntent(
+            action="create",
+            query="Lagavulin",
+            brand="Lagavulin",
+            max_price=Decimal(50),
+            price_unit="absolute",
+        )
+    )
+
+    assert rule.query == "Lagavulin"
+    assert rule.brand == "Lagavulin"
 
 
 def test_rules_are_persistent_deduplicated_and_updates_are_idempotent(tmp_path):

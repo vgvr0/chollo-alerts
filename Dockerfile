@@ -12,8 +12,8 @@ COPY src ./src
 RUN python -m pip install --upgrade pip \
     && python -m pip install . \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
-    && mkdir -p /data \
-    && chown -R appuser:appuser /app /data
+    && mkdir -p /app/data \
+    && chown -R appuser:appuser /app
 
 USER appuser
 
