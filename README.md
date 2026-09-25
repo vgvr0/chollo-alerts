@@ -390,9 +390,14 @@ terminar. El umbral por defecto es `max(SCAN_INTERVAL_MINUTES * 3, 15)`
 minutos y admite `HEALTH_STALE_AFTER_MINUTES`; el arranque tiene una gracia de
 `max(SCAN_INTERVAL_MINUTES * 2, 5)` minutos.
 
-`pytest` and `ruff` are the development tools used below; they are **not**
-declared as dependencies of `pyproject.toml`, so install them separately (for
-example `pip install pytest ruff`).
+For the complete development toolchain, install the locked development
+environment from the repository root:
+
+```bash
+uv sync --frozen --extra dev
+```
+
+The checks used by CI are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `tzdata` **is** a declared dependency: `zoneinfo` reads the IANA database from
 the operating system, and Windows does not ship one, so the per-alert

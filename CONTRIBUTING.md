@@ -22,6 +22,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy .
 uv run pip-audit
+git diff --check
 ```
 
 Coverage is configured with a minimum of 85% in `pyproject.toml`. Functional
@@ -44,7 +45,7 @@ backups, logs, or other runtime data. Start from `.env.example` and keep real
 values in the local environment. SQLite files and operational state are local
 runtime data, not source artifacts.
 
-## Docker
+## Docker and Compose
 
 The supported local container workflow is:
 
@@ -58,3 +59,10 @@ docker compose exec scanner chollometro-alerts health
 The Compose services share the named `chollometro-data` volume. Do not use
 `docker compose down -v` unless you intentionally want to remove that runtime
 data.
+
+## Pull request checklist
+
+- Keep `.env` local and confirm that no secrets or runtime data are staged.
+- Add or update focused tests for functional changes.
+- Run the checks above and include relevant results in the pull request.
+- Review `git diff --check` before committing.

@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Only the latest `master` commit and the latest published release, if one
-exists, receive security fixes. Older unreleased or unsupported revisions are
-not maintained.
+The latest `master` branch is the supported development line. If published
+releases exist, the latest release is supported as well. Older unreleased or
+unsupported revisions are not maintained.
 
 ## Reporting a vulnerability
 
