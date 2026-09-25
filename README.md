@@ -1,43 +1,98 @@
 # 🛒 Chollometro Alerts
 
-Smart deal monitoring for [Chollometro](https://www.chollometro.com/) with configurable alert rules, automated product analysis and Telegram notifications.
+Create deal alerts in natural language and receive matching Chollometro deals
+on Telegram.
 
-The daemon discovers new deals through Chollometro's **internal GraphQL feed** (the newest threads, fetched once per cycle) and falls back to the public HTML searches when that API cannot be reached. Every unseen deal is then extracted, priced and evaluated against the active alert rules before deciding whether an alert should be sent.
+The daemon discovers new deals through Chollometro's **internal GraphQL feed**
+and falls back to public HTML searches when that API cannot be reached. Pricing
+calculations and deal decisions remain deterministic and reproducible; optional
+DeepSeek analysis is used only to extract structured facts when local parsing
+is not enough.
 
-It combines deterministic extraction with optional **LLM-powered analysis using DeepSeek**, while keeping pricing calculations and deal decisions deterministic and reproducible.
+[![GitHub Release](https://img.shields.io/github/v/release/vgvr0/chollometro-alerts?label=release&sort=semver)](https://github.com/vgvr0/chollometro-alerts/releases/tag/v1.0.0)
+[![CI](https://github.com/vgvr0/chollometro-alerts/actions/workflows/ci.yml/badge.svg)](https://github.com/vgvr0/chollometro-alerts/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
+[![License: Apache-2.0](https://img.shields.io/github/license/vgvr0/chollometro-alerts)](LICENSE)
 
-## 📚 Community and legal
+## 💬 Natural-language alerts
 
-* Licensed under the [Apache License 2.0](LICENSE).
-* See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull request
-  guidance.
-* See [SECURITY.md](SECURITY.md) for vulnerability reporting and responsible
-  disclosure.
+These are examples of alert sentences supported by the current parser and rule engine:
 
-## ✨ Features
+```text
+Avísame de leche por debajo de 0,80 €/L
+Avísame de zapatillas ASICS por menos de 80 €
+Avísame de cualquier chollo con más de 500°
+Avísame de portátiles por menos de 700 € de Amazon pero no AliExpress
+```
 
-* 🔎 **Automated deal monitoring** through the internal GraphQL feed (one request per cycle), with the public HTML searches kept as fallback
-* 🚨 **Configurable alert rules** for different products and searches
-* 🆕 **New-deal detection** using persistent SQLite state
-* 🧠 **Hybrid product extraction**
+## ✨ Highlights
 
-  * deterministic parsing when possible
-  * DeepSeek LLM fallback for ambiguous product information
-* 📦 Structured extraction of product attributes such as quantity and total volume
-* 💰 Deterministic **price-per-unit analysis**
-* 🎯 Rule-based filtering before sending notifications
-* 🏪 **Per-alert shop filters**: `de Amazon o PcComponentes pero no AliExpress`
-  (allowed/excluded merchants, decided deterministically, before the LLM)
-* ⏱️ **Per-alert notification hours**: `solo entre las 08:00 y las 23:00`,
-  in a real timezone. A deal found outside the window is **not lost**: it stays
-  pending and is sent as soon as the window opens.
-* 📲 **Telegram notifications** for matching new deals
-* 🧾 **Explainable notifications**: each alert names the deal, the alert that matched, the conditions that held and the evaluation method
-* 💾 Persistent extraction cache to avoid unnecessary LLM calls
-* 🔁 Safe retry behaviour for failed notifications
-* 📊 Runtime metrics for LLM usage, cache hits and detected deals
-* 🧪 Dry-run and baseline modes for safe testing
-* 🔐 Environment-based secret management
+* Natural-language Telegram alerts with create, update, list and delete operations
+* Automatic Chollometro monitoring with GraphQL discovery and HTML fallback
+* Total-price, price-per-unit and price-per-liter filters
+* Chollometro temperature, category, age and temperature-momentum filters
+* Merchant allow/exclude filters and per-alert notification windows
+* Deterministic matching with explainable notifications
+* Optional DeepSeek NLP; `LLM_ENABLED=false` keeps the safe default
+* Multi-user Telegram support with persistent SQLite state and extraction cache
+* Docker Compose deployment, bounded retries and failure-aware recovery
+
+## 🚀 Quick Start
+
+Docker Compose is the recommended path for a local, continuously running setup.
+
+```powershell
+git clone https://github.com/vgvr0/chollometro-alerts.git
+cd chollometro-alerts
+Copy-Item .env.example .env
+```
+
+Fill in `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`. Keep the
+optional DeepSeek integration disabled unless you need it:
+
+```dotenv
+LLM_ENABLED=false
+```
+
+Start the listener and scanner:
+
+```powershell
+docker compose up -d --build
+docker compose ps
+docker compose exec scanner chollometro-alerts health
+```
+
+The scanner may report `STARTING` until its first completed scan; it should then
+become healthy. See [Configuration](#️-configuration) and
+[Run locally with Docker](#run-locally-with-docker) for the complete settings,
+logs and operational commands.
+
+## 🔄 How it works at a glance
+
+```text
+Telegram alert
+      ↓
+Structured rule
+      ↓
+Chollometro discovery
+      ↓
+Deterministic evaluation
+      ↓
+Match evidence
+      ↓
+Telegram notification
+```
+
+## 📖 Documentation map
+
+* [Telegram alerts and matching](#-example)
+* [Configuration](#️-configuration)
+* [Docker and deployment](#run-locally-with-docker)
+* [GraphQL discovery and HTML fallback](#-graphql-discovery-feed)
+* [Persistence and multi-user behaviour](#-persistence)
+* [Testing and historical replay](#-testing-an-alert-against-historical-deals)
+* [Known limitations](#️-known-limitations)
+* [Security, contributing and license](#-community-and-legal)
 
 ## 🏗️ How it works
 
@@ -1102,8 +1157,6 @@ One row is kept forever for every thread the feed has ever discovered: there is
 no pruning job. Lookups stay cheap (the lookups go through the primary key), but
 the table only grows.
 
-## 🧪 Testing
-
 ## 📈 Temperature momentum
 
 Temperature momentum is an opt-in, deterministic signal for recent deals. It
@@ -1126,6 +1179,8 @@ Snapshots are stored in SQLite (`deal_temperature_snapshots`) with an index on
 observed_at)`, and retained for 24 hours by the scan cycle. Per-alert
 structured rules can opt in with `momentum_enabled`, choose a supported window,
 and set `minimum_temperature_velocity`. Existing rules remain unchanged.
+
+## 🧪 Testing
 
 ```bash
 python -m pytest -q
@@ -1173,3 +1228,11 @@ refusal to invent hours for a vague period.
   `include_merchants` / `exclude_merchants` are decided deterministically
   before the LLM, and `notification_window` gates Telegram without ever
   dropping a match (an alert without a window keeps notifying immediately).
+
+## 📚 Community and legal
+
+* Licensed under the [Apache License 2.0](LICENSE).
+* See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull request
+  guidance.
+* See [SECURITY.md](SECURITY.md) for vulnerability reporting and responsible
+  disclosure.
