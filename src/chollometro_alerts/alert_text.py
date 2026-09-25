@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import cast
 
 from .alert_rule import AlertConstraints
@@ -39,6 +40,104 @@ from .schedule import (
     parse_time,
     validate_timezone,
 )
+
+
+# --- Conversational prices -------------------------------------------------- #
+#
+# A price with an explicit quantity dimension is safe to read before the LLM:
+# the dimension is part of the user's words, not an inference from the product
+# name.  Requiring the currency and the unit in the same match also keeps a
+# total-price condition such as "por menos de 5 €" on `max_price`.
+_PRICE_NUMBER = r"\d+(?:[.,]\d+)?"
+_UNIT_PRICE_RE = re.compile(
+    rf"(?P<amount>{_PRICE_NUMBER})\s*"
+    rf"(?P<currency>€|euros?|c[ée]ntimos?|cts?\.?)\s*"
+    rf"(?:/\s*|por\s+|(?:el|la)\s+)"
+    rf"(?P<unit>l(?:itro)?s?|kg|kilos?|kilogramos?|"
+    rf"unidad(?:es)?|uds?\.?)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class UnitPriceMention:
+    """An explicit maximum price expressed per supported domain unit."""
+
+    value: Decimal
+    unit: str
+
+
+def extract_unit_price_mention(text: str) -> UnitPriceMention | None:
+    """Read an explicit price-per-unit condition from conversational Spanish.
+
+    The currency is deliberately part of the pattern.  Therefore a plain
+    "por menos de 5 €" remains an absolute deal-price constraint, while
+    "por menos de 0,8 € el litro" becomes a per-litre constraint.  Céntimos
+    are converted with Decimal arithmetic to avoid binary-money rounding.
+    """
+    if not text:
+        return None
+    match = _UNIT_PRICE_RE.search(text)
+    if match is None:
+        return None
+    try:
+        value = Decimal(match.group("amount").replace(",", "."))
+    except InvalidOperation:  # pragma: no cover - the regex only matches numbers
+        return None
+    currency = match.group("currency").casefold().rstrip(".")
+    if currency.startswith(("cént", "cent", "ct")):
+        value /= Decimal(100)
+    unit = match.group("unit").casefold().rstrip(".")
+    if unit.startswith(("l", "litro")):
+        dimension = "liter"
+    elif unit in {"kg", "kilo", "kilos", "kilogramo", "kilogramos"}:
+        dimension = "kilogram"
+    else:
+        dimension = "unit"
+    return UnitPriceMention(value, dimension)
+
+
+_DETERMINISTIC_ALERT_RE = re.compile(
+    r"\b(?:alertas?|av[íi]same|notific(?:a|ame))\s+(?:de|para)\s+"
+    r"(?P<product>.+?)\s+(?=(?:por\s+debajo|a\s+menos\s+de|menos\s+de|"
+    r"m[áa]ximo)\b)",
+    re.IGNORECASE,
+)
+
+
+def deterministic_price_alert(text: str):
+    """Build the common product + explicit unit-price alert without an LLM.
+
+    This intentionally handles only the unambiguous creation shape.  More
+    open-ended language continues through the provider-backed parser.
+    """
+    mention = extract_unit_price_mention(text)
+    match = _DETERMINISTIC_ALERT_RE.search(text or "")
+    if mention is None or match is None:
+        return None
+    product = match.group("product").strip(" ,")
+    mentions = extract_merchant_mentions(text)
+    for merchant in mentions.allowed:
+        product = re.sub(
+            rf"\s+(?:de|en)\s+{re.escape(merchant)}\s*$",
+            "",
+            product,
+            flags=re.IGNORECASE,
+        ).strip(" ,")
+    if not product:
+        return None
+    from .intent import AlertIntent
+
+    return merge_intent(
+        AlertIntent(
+            action="create",
+            query=product,
+            product_type=product,
+            max_price=mention.value,
+            price_unit=mention.unit,
+        ),
+        text,
+    )
 
 # Well-known shops of the Spanish market. The list only has to make the
 # unambiguous cases (`de Amazon`, `no Carrefour`) readable without the model;
@@ -541,7 +640,13 @@ def merge_intent(intent, text: str):
     temperature = extract_temperature_mentions(text)
     categories = extract_category_mentions(text)
     max_age = extract_max_age_minutes(text)
+    unit_price = extract_unit_price_mention(text)
     updates: dict[str, object] = {}
+    if unit_price is not None:
+        # The literal unit-price phrase is authoritative.  In particular, it
+        # repairs providers that return the amount but omit `price_unit`.
+        updates["max_price"] = unit_price.value
+        updates["price_unit"] = unit_price.unit
     if mentions.allowed:
         updates["include_merchants"] = list(mentions.allowed)
     if mentions.excluded:

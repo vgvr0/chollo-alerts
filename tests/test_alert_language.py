@@ -13,6 +13,8 @@ import pytest
 
 from chollometro_alerts.alert_rule import AlertConstraints, AlertRule
 from chollometro_alerts.alert_text import (
+    deterministic_price_alert,
+    extract_unit_price_mention,
     extract_merchant_mentions,
     extract_notification_window,
     merge_intent,
@@ -31,6 +33,70 @@ COMPLETE = (
     "Avísame de portátiles gaming por menos de 1000 € de Amazon o PcComponentes, "
     "pero no AliExpress"
 )
+
+
+# --- Unit prices ------------------------------------------------------------ #
+
+
+@pytest.mark.parametrize(
+    ("text", "value", "unit"),
+    [
+        ("leche por debajo de 0.8€ el litro", "0.8", "liter"),
+        ("leche por debajo de 0,8€ el litro", "0.8", "liter"),
+        ("leche por debajo de 0.8 €/L", "0.8", "liter"),
+        ("leche por debajo de 0,8 €/L", "0.8", "liter"),
+        ("leche a menos de 0.8 euros el litro", "0.8", "liter"),
+        ("leche a menos de 80 céntimos el litro", "0.8", "liter"),
+        ("leche a menos de 80 centimos por litro", "0.8", "liter"),
+        ("leche por debajo de 80 ct/L", "0.8", "liter"),
+        ("leche máximo 0.8 €/l", "0.8", "liter"),
+        ("arroz por debajo de 0,8 €/kg", "0.8", "kilogram"),
+        ("pilas por debajo de 80 céntimos por unidad", "0.8", "unit"),
+    ],
+)
+def test_conversational_unit_prices_are_normalized(text, value, unit):
+    mention = extract_unit_price_mention(text)
+    assert mention is not None
+    assert mention.value == Decimal(value)
+    assert mention.unit == unit
+
+
+def test_total_price_is_not_reclassified_as_unit_price():
+    assert extract_unit_price_mention("leche por menos de 5 €") is None
+
+
+def test_basic_unit_price_alert_is_deterministic_without_provider():
+    intent = deterministic_price_alert(
+        "Quiero alertas de leche por debajo de 0.8€ el litro"
+    )
+    assert intent is not None
+    assert intent.query == "leche"
+    assert intent.max_price == Decimal("0.8")
+    assert intent.price_unit == "liter"
+
+
+def test_unit_price_repairs_incomplete_provider_intent_and_keeps_other_constraints():
+    text = "leche de Amazon por debajo de 0.8 €/L y temperatura mayor a 300"
+    intent = merge_intent(
+        AlertIntent(
+            action="create",
+            query="leche",
+            max_price=Decimal("0.8"),
+            price_unit=None,
+        ),
+        text,
+    )
+    rule = intent_to_rule(validate_intent(intent))
+    assert rule.query == "leche"
+    assert rule.include_merchants == ("Amazon",)
+    assert rule.constraints.max_price_per_liter == Decimal("0.8")
+    assert rule.constraints.temperature_min == 300
+
+
+def test_ambiguous_price_without_currency_and_unit_still_needs_clarification():
+    intent = AlertIntent(action="create", query="leche", max_price=Decimal("0.8"))
+    with pytest.raises(ValueError, match="precio máximo y su unidad"):
+        validate_intent(merge_intent(intent, "leche por debajo de 0.8"))
 
 
 # --- Shops ------------------------------------------------------------------ #
@@ -284,6 +350,33 @@ def process(controller, text, update_id=1):
     return controller.process_update(
         {"update_id": update_id, "message": {"chat": {"id": CHAT_ID}, "text": text}}
     )
+
+
+def test_basic_unit_price_telegram_flow_persists_without_llm(tmp_path):
+    path = tmp_path / "alerts.db"
+    repository = DealRepository(path)
+    controller = Controller(
+        bot_token="token",
+        authorized_chat_id=CHAT_ID,
+        repository=repository,
+        translator=None,
+    )
+
+    reply = process(controller, "Quiero alertas de leche por debajo de 0.8€ el litro")
+    assert "0,80 €/L" in reply
+    row = repository.list_alert_rules(user_id=controller.current_user_id)[0]
+    rule_id = row[0]
+    assert repository.load_alert_rule(
+        rule_id, user_id=controller.current_user_id
+    ).constraints.max_price_per_liter == Decimal("0.8")
+
+    repository.close()
+    reopened = DealRepository(path)
+    loaded = reopened.load_alert_rule(rule_id, user_id=controller.current_user_id)
+    assert loaded is not None
+    assert loaded.query == "leche"
+    assert loaded.constraints.max_price_per_liter == Decimal("0.8")
+    assert reopened.get_rule(rule_id, user_id=controller.current_user_id)[6] == 1
 
 
 def test_the_confirmation_shows_the_shops_and_the_schedule(tmp_path):

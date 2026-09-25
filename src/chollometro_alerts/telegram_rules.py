@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import requests
 
-from .alert_text import merge_intent
+from .alert_text import deterministic_price_alert, merge_intent
 from .errors import ChollometroError
 from .intent import AlertIntent, intent_to_rule, notification_window, validate_intent
 from .intent_router import (
@@ -389,7 +389,11 @@ class TelegramRuleController:
 
     def _handle_create_or_unknown(self, text):
         """The creation path, unchanged: interpret the sentence, then store it."""
-        if self.translator is None:
+        # A product plus an explicit unit-price condition is fully
+        # deterministic.  Keep this fast path ahead of DeepSeek so a clear
+        # Telegram request does not depend on provider availability.
+        intent = deterministic_price_alert(text)
+        if intent is None and self.translator is None:
             raise ValueError(
                 "la creación de alertas desde Telegram requiere LLM_ENABLED=true "
                 "y DEEPSEEK_API_KEY"
@@ -398,7 +402,8 @@ class TelegramRuleController:
         # sentence itself before anything is persisted: they must never be
         # an invention of the model, and a vague period ("por la noche")
         # asks for the exact hours instead of guessing them.
-        intent = merge_intent(self.translator.interpret_alert(text), text)
+        if intent is None:
+            intent = merge_intent(self.translator.interpret_alert(text), text)
         if intent.action == "delete":
             # The provider recognized a deletion this router did not: which
             # alert disappears is still decided by the sentence, never by the
