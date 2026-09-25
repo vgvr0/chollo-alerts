@@ -97,23 +97,46 @@ def extract_unit_price_mention(text: str) -> UnitPriceMention | None:
     return UnitPriceMention(value, dimension)
 
 
-_DETERMINISTIC_ALERT_RE = re.compile(
-    r"\b(?:alertas?|av[íi]same|notific(?:a|ame))\s+(?:de|para)\s+"
-    r"(?P<product>.+?)\s+(?=(?:por\s+debajo|a\s+menos\s+de|menos\s+de|"
-    r"m[áa]ximo)\b)",
-    re.IGNORECASE,
+_ALERT_CONDITION_CUE = (
+    r"(?:por\s+debajo|a\s+menos\s+de|menos\s+de|por\s+menos\s+de|"
+    r"m[áa]ximo|con\s+(?:m[áa]s|menos)|por\s+encima)"
+)
+_DETERMINISTIC_ALERT_PATTERNS = (
+    re.compile(
+        r"\b(?:alertas?|av[íi]same|notific(?:a|ame))\s+(?:de|para)\s+"
+        rf"(?P<product>.+?)(?=\s+{_ALERT_CONDITION_CUE}\b|[.!?]?$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquiero\s+(?!(?:una\s+|la\s+)?alertas?\b)"
+        rf"(?P<product>.+?)(?=\s+{_ALERT_CONDITION_CUE}\b|[.!?]?$)",
+        re.IGNORECASE,
+    ),
 )
 
 
 def deterministic_price_alert(text: str):
-    """Build the common product + explicit unit-price alert without an LLM.
+    """Build an unambiguous product alert, with or without a price condition.
 
-    This intentionally handles only the unambiguous creation shape.  More
-    open-ended language continues through the provider-backed parser.
+    Product-only requests are intentionally limited to explicit creation
+    shapes.  This gives ``alertas de cerveza`` a safe deterministic path while
+    keeping ``quiero una alerta`` incomplete and therefore clarifiable.
     """
     mention = extract_unit_price_mention(text)
-    match = _DETERMINISTIC_ALERT_RE.search(text or "")
-    if mention is None or match is None:
+    match = next(
+        (
+            candidate
+            for pattern in _DETERMINISTIC_ALERT_PATTERNS
+            if (candidate := pattern.search(text or "")) is not None
+        ),
+        None,
+    )
+    if match is None:
+        return None
+    condition_present = bool(
+        re.search(rf"\s+{_ALERT_CONDITION_CUE}\b", text or "", re.IGNORECASE)
+    )
+    if condition_present and mention is None:
         return None
     product = match.group("product").strip(" ,")
     mentions = extract_merchant_mentions(text)
@@ -126,6 +149,10 @@ def deterministic_price_alert(text: str):
         ).strip(" ,")
     if not product:
         return None
+    if re.match(
+        r"(?:cualquier|algo|lo\s+que\s+sea|lo\s+que\s+haya)\b", product, re.IGNORECASE
+    ):
+        return None
     from .intent import AlertIntent
 
     return merge_intent(
@@ -133,8 +160,8 @@ def deterministic_price_alert(text: str):
             action="create",
             query=product,
             product_type=product,
-            max_price=mention.value,
-            price_unit=mention.unit,
+            max_price=mention.value if mention is not None else None,
+            price_unit=mention.unit if mention is not None else None,
         ),
         text,
     )

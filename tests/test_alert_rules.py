@@ -16,12 +16,8 @@ def test_intent_validation_and_ambiguity():
         )
     )
     assert intent.max_price == Decimal("0.80")
-    try:
-        validate_intent(AlertIntent(action="create", query="cerveza"))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("ambiguous intent must be rejected")
+    general = validate_intent(AlertIntent(action="create", query="cerveza"))
+    assert general.query == "cerveza"
 
 
 def test_explicit_brand_is_preserved_as_relevance_not_just_search_query():

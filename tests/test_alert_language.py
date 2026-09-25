@@ -381,6 +381,54 @@ def test_basic_unit_price_telegram_flow_persists_without_llm(tmp_path):
     assert reopened.get_rule(rule_id, user_id=controller.current_user_id)[6] == 1
 
 
+@pytest.mark.parametrize(
+    ("text", "query"),
+    [
+        ("Quiero alertas de cerveza", "cerveza"),
+        ("Avísame de leche", "leche"),
+        ("Quiero alertas de mini PC", "mini PC"),
+    ],
+)
+def test_product_only_telegram_alerts_are_created_without_constraints(
+    tmp_path, text, query
+):
+    repository = DealRepository(tmp_path / f"{query.replace(' ', '_')}.db")
+    controller = Controller(
+        bot_token="token",
+        authorized_chat_id=CHAT_ID,
+        repository=repository,
+        translator=None,
+    )
+
+    reply = process(controller, text)
+    row = repository.list_alert_rules(user_id=controller.current_user_id)[0]
+    loaded = repository.load_alert_rule(row[0], user_id=controller.current_user_id)
+
+    assert "Alerta creada" in reply
+    assert query == row[1] == row[2]
+    assert loaded is not None
+    assert loaded.query == query
+    assert loaded.product == query
+    assert loaded.brand is None
+    assert loaded.constraints == AlertConstraints()
+
+
+@pytest.mark.parametrize("text", ["Quiero una alerta", "Crear alerta"])
+def test_productless_creation_still_requests_clarification(tmp_path, text):
+    repository = DealRepository(tmp_path / "incomplete.db")
+    controller = Controller(
+        bot_token="token",
+        authorized_chat_id=CHAT_ID,
+        repository=repository,
+        translator=None,
+    )
+
+    reply = process(controller, text)
+
+    assert reply.startswith("Necesito una aclaración:")
+    assert repository.list_alert_rules() == []
+
+
 def test_the_confirmation_shows_the_shops_and_the_schedule(tmp_path):
     repository = DealRepository(tmp_path / "alerts.db")
     controller = Controller(

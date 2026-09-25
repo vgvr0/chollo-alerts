@@ -12,33 +12,24 @@ _GENERIC_ALERT_TERMS = frozenset(
         "barato",
         "baratas",
         "baratos",
-        "cerveza",
+        "cualquier",
         "chollo",
         "chollos",
         "cosa",
         "cosas",
         "interesante",
-        "leche",
-        "móvil",
-        "móviles",
-        "movil",
-        "moviles",
+        "alerta",
+        "alertas",
         "oferta",
         "ofertas",
-        "portátil",
-        "portátiles",
-        "portatil",
-        "portatiles",
         "producto",
         "productos",
         "quiero",
         "recomendaciones",
         "recomiéndame",
         "recomiendame",
-        "ropa",
         "saber",
-        "zapatilla",
-        "zapatillas",
+        "si",
     }
 )
 
@@ -47,11 +38,14 @@ def has_specific_relevance(intent: "AlertIntent") -> bool:
     """Return whether the intent names a useful product, brand, or concept."""
     if intent.brand and intent.brand.casefold() not in _GENERIC_ALERT_TERMS:
         return True
-    if (
-        intent.product_type
-        and intent.product_type.casefold() not in _GENERIC_ALERT_TERMS
-    ):
-        return True
+    # A structured product type is already evidence that the parser identified
+    # a subject.  Product categories such as ``cerveza`` and ``leche`` used to
+    # be listed as generic words here, which incorrectly rejected the perfectly
+    # valid product-only alert after deterministic extraction.
+    if intent.product_type:
+        product_type = intent.product_type.casefold()
+        if product_type not in {"algo", "cosa", "cosas", "producto", "productos"}:
+            return True
     values = [intent.query, intent.product_type, intent.brand]
     tokens = [
         token.casefold()
@@ -60,9 +54,11 @@ def has_specific_relevance(intent: "AlertIntent") -> bool:
         for token in value.split()
         if token.casefold() not in _GENERIC_ALERT_TERMS
     ]
-    return bool(tokens) and (
-        len(tokens) >= 2 or bool(intent.brand or intent.product_type)
-    )
+    if not tokens:
+        return False
+    # A single known product/category is sufficient evidence.  Conversational
+    # filler remains rejected because it contributes no token here.
+    return bool(tokens)
 
 
 class AlertIntent(BaseModel):

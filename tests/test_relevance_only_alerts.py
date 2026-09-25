@@ -7,6 +7,7 @@ from chollometro_alerts.evaluation import interest_rule_from_alert
 from chollometro_alerts.filters import apply_rule
 from chollometro_alerts.intent import AlertIntent, intent_to_rule, validate_intent
 from chollometro_alerts.models import Deal
+from chollometro_alerts.product import ProductExtraction
 from chollometro_alerts.telegram_rules import TelegramRuleController
 
 
@@ -65,6 +66,27 @@ def test_fairy_does_not_match_ariel_or_unrelated_cheap_products():
     assert apply_rule(
         deal("Producto de limpieza genérico", price="0.01"), rule
     ).reason == ("REJECTED_RELEVANCE")
+
+
+def test_product_only_beer_alert_matches_beer_and_rejects_unrelated_cheap_deals():
+    rule = interest_rule_from_alert(
+        intent_to_rule(
+            validate_intent(
+                AlertIntent(action="create", query="cerveza", product_type="cerveza")
+            )
+        )
+    )
+    assert apply_rule(
+        deal(
+            "Pack cerveza Mahou",
+            price="1.00",
+            extraction=ProductExtraction(product_type="cerveza"),
+        ),
+        rule,
+    ).accepted
+    assert apply_rule(deal("Coca-Cola 12x330 ml", price="0.01"), rule).reason == (
+        "REJECTED_PRODUCT"
+    )
 
 
 def test_relevance_only_listing_and_creation_do_not_invent_price():

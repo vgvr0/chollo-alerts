@@ -524,7 +524,8 @@ class TelegramRuleController:
             return validate_intent(deterministic)
         self._record_interpretation("fallback", llm_success=False)
         raise ValueError(
-            "No he podido identificar una alerta completa; indica el producto y la condición"
+            "No he podido identificar un producto o categoría suficientemente "
+            "concreto; indica qué quieres vigilar"
         )
 
     def _record_interpretation(self, method, *, llm_success):

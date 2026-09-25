@@ -257,9 +257,7 @@ def test_a_temperature_only_alert_is_a_complete_alert():
     assert apply_rule(a_deal(600), interest_rule_from_alert(rule)).accepted
     # An alert with neither a price nor a temperature is still incomplete.
     with pytest.raises(ValueError):
-        validate_intent(
-            AlertIntent(action="create", query="zapatillas", product_type="zapatillas")
-        )
+        validate_intent(AlertIntent(action="create"))
 
 
 def test_the_creation_reply_states_the_temperature_condition():
