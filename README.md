@@ -226,8 +226,17 @@ start-up). The names and defaults below are the ones the code really uses
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Model asked for the extraction. |
 | `DEEPSEEK_TIMEOUT_SECONDS` | `20` | LLM request timeout. |
 | `DEEPSEEK_MAX_RETRIES` | `2` | LLM retry budget. |
+| `TELEGRAM_ALERT_NLP_MODE` | `hybrid` | Telegram alert interpretation mode: `deterministic`, `hybrid` or `llm_first`. |
 | `ALERT_TIMEZONE` | `Europe/Madrid` | Default timezone of the per-alert notification windows. An alert that names its own timezone always wins. |
 | `MILK_*`, `BEER_*` | — | Legacy thresholds of the env-configured rules used by `check`, `baseline` and `run-rules --dry-run`. |
+
+The LLM is optional: `LLM_ENABLED=false` is the safe default, and a fresh
+clone does not need a DeepSeek API key for features that do not use the LLM.
+When enabled, `DEEPSEEK_API_KEY` is required. Telegram alert interpretation
+supports three modes: `deterministic` interprets without prioritising the LLM;
+`hybrid` keeps the existing mixed behaviour; and `llm_first` tries the LLM
+first, using the deterministic parser as fallback when the provider fails or
+its output does not validate.
 
 > `ERROR_ALERT_COOLDOWN_MINUTES` is validated at startup: a missing value keeps
 > the 60-minute default, and an unusable one (`0`, a negative number, a text)
