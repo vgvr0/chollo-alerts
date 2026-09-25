@@ -26,10 +26,18 @@ class TelegramSettings:
     multiuser_enabled: bool = False
     auto_register: bool = False
     telegram_user_id: str | None = None
+    alert_nlp_mode: str = "hybrid"
 
     @classmethod
     def from_env(cls):
         load_project_dotenv()
+        alert_nlp_mode = (
+            os.getenv("TELEGRAM_ALERT_NLP_MODE", "hybrid").strip().casefold()
+        )
+        if alert_nlp_mode not in {"deterministic", "hybrid", "llm_first"}:
+            raise ConfigurationError(
+                "TELEGRAM_ALERT_NLP_MODE debe ser deterministic, hybrid o llm_first"
+            )
         missing = [
             name
             for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
@@ -49,6 +57,7 @@ class TelegramSettings:
             .casefold()
             == "true",
             telegram_user_id=os.getenv("TELEGRAM_USER_ID", "").strip() or None,
+            alert_nlp_mode=alert_nlp_mode,
         )
 
 

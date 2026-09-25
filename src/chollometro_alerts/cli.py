@@ -431,6 +431,7 @@ def main():
                 translator=extractor,
                 multiuser_enabled=telegram.multiuser_enabled,
                 auto_register=telegram.auto_register,
+                alert_nlp_mode=telegram.alert_nlp_mode,
             )
             controller.poll_once()
             return
@@ -471,6 +472,7 @@ def main():
                 service=service,
                 multiuser_enabled=telegram.multiuser_enabled,
                 auto_register=telegram.auto_register,
+                alert_nlp_mode=telegram.alert_nlp_mode,
             )
         stop = threading.Event()
         previous_handlers = {}
