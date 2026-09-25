@@ -17,6 +17,7 @@ from .intent_router import (
 )
 from .models import format_number
 from .telegram import post_with_retry
+from .telegram_users import TelegramUserResolver
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +280,8 @@ class TelegramRuleController:
         backoff=0.5,
         sleep=time.sleep,
         service=None,
+        multiuser_enabled=False,
+        auto_register=False,
     ):
         self.url = f"https://api.telegram.org/bot{bot_token}"
         self.authorized_chat_id = str(authorized_chat_id)
@@ -289,15 +292,52 @@ class TelegramRuleController:
         self.backoff = backoff
         self._sleep = sleep
         self.service = service
+        self.multiuser_enabled = multiuser_enabled
+        self.current_user_id = None
+        self.current_chat_id = self.authorized_chat_id
+        self.user_resolver = TelegramUserResolver(
+            repository,
+            enabled=multiuser_enabled,
+            auto_register=auto_register,
+            legacy_chat_id=authorized_chat_id,
+        )
 
     def process_update(self, update):
         update_id = update.get("update_id")
         message = update.get("message") or {}
+        if update_id is None:
+            return None
+        chat = message.get("chat") or {}
+        chat_type = chat.get("type")
+        if chat_type is not None and chat_type != "private":
+            self.current_chat_id = str(chat.get("id", self.authorized_chat_id))
+            if self.multiuser_enabled:
+                self.send_message(
+                    "🤖 Este bot está disponible únicamente por chat privado."
+                )
+            return None
+        if self.multiuser_enabled and not TelegramUserResolver.is_allowed_chat(update):
+            return None
         if (
-            update_id is None
-            or str(message.get("chat", {}).get("id")) != self.authorized_chat_id
+            not self.multiuser_enabled
+            and str(message.get("chat", {}).get("id")) != self.authorized_chat_id
         ):
             return None
+        user = self.user_resolver.resolve(update)
+        if user is None:
+            if not self.multiuser_enabled:
+                return None
+            self.current_chat_id = str(
+                message.get("chat", {}).get("id", self.authorized_chat_id)
+            )
+            self.send_message(
+                "⛔ No tienes acceso a este bot. Pide al administrador que te registre."
+            )
+            return None
+        self.current_user_id = user.id if self.multiuser_enabled else None
+        self.current_chat_id = str(
+            message.get("chat", {}).get("id", self.authorized_chat_id)
+        )
         if not self.repository.claim_telegram_update(update_id):
             return None
         text = message.get("text", "").strip()
@@ -365,7 +405,7 @@ class TelegramRuleController:
             # An update that names no alert can only be about a stored one.
             return self._handle_update_alert(text)
         intent = validate_intent(intent)
-        rows = self.repository.apply_alert_intent(intent)
+        rows = self.repository.apply_alert_intent(intent, user_id=self.current_user_id)
         if intent.action in {"create", "update"}:
             target = next(
                 (
@@ -381,7 +421,10 @@ class TelegramRuleController:
             )
             if target:
                 self.repository.attach_alert_rule(
-                    target[0], intent_to_rule(intent), text
+                    target[0],
+                    intent_to_rule(intent),
+                    text,
+                    user_id=self.current_user_id,
                 )
                 # From now on, "esa alerta" means the one just created.
                 self._remember_alerts([target[0]])
@@ -391,12 +434,26 @@ class TelegramRuleController:
             rule = next((r for r in rows if r[1] == query), None)
             # A rule whose baseline could not be taken stays disabled, and
             # retrying the same message must be allowed to complete it.
-            if rule is not None and self.repository.get_rule(rule[0])[7] in {
+            if rule is not None and self.repository.get_rule(
+                rule[0], user_id=self.current_user_id
+            )[7] in {
                 "INITIALIZING",
                 "INITIALIZING_FAILED",
             }:
-                baseline_count = self.service.baseline_rule(rule[0], query or "")
-                rows = self.repository.list_alert_rules()
+                baseline_count = self.service.baseline_rule(rule[0], query)
+                rows = self.repository.list_alert_rules(user_id=self.current_user_id)
+        elif intent.action == "create" and self.service is None:
+            # Poll/listen mode may not have a scanner attached.  The rule is
+            # still a valid active alert; a later scan can evaluate it.  Keep
+            # INITIALIZING only for the service-backed baseline transaction,
+            # where existing deals must be excluded before activation.
+            query = intent.query or intent.product_type or intent.brand
+            rule = next((r for r in rows if r[1] == query), None)
+            if rule is not None:
+                self.repository.set_rule_state(
+                    rule[0], "ACTIVE", enabled=True, user_id=self.current_user_id
+                )
+                rows = self.repository.list_alert_rules(user_id=self.current_user_id)
         if intent.action == "list":
             self._remember_alerts([row[0] for row in rows])
         elif intent.action == "delete":
@@ -405,7 +462,11 @@ class TelegramRuleController:
 
     def _handle_list_alerts(self):
         """Show every stored alert and remember them as the last ones shown."""
-        rows = self.repository.list_alert_rules() if self.repository is not None else []
+        rows = (
+            self.repository.list_alert_rules(user_id=self.current_user_id)
+            if self.repository is not None
+            else []
+        )
         self._remember_alerts([row[0] for row in rows])
         return self._format(AlertIntent(action="list"), rows)
 
@@ -415,7 +476,9 @@ class TelegramRuleController:
         resolution = self._resolve(reference)
         if resolution.status == "unique":
             candidate = resolution.match
-            self.repository.delete_alert_rule(candidate.rule_id)
+            self.repository.delete_alert_rule(
+                candidate.rule_id, user_id=self.current_user_id
+            )
             self._clear_remembered()
             return f"🗑️ Alerta eliminada: {self._alert_label(candidate)}"
         if resolution.status == "ambiguous":
@@ -436,7 +499,9 @@ class TelegramRuleController:
             candidate = resolution.match
             rule = updated_rule(candidate.rule, reference, legacy=candidate.legacy)
             try:
-                self.repository.replace_alert_rule(candidate.rule_id, rule, text)
+                self.repository.replace_alert_rule(
+                    candidate.rule_id, rule, text, user_id=self.current_user_id
+                )
             except ValueError as exc:
                 return f"⚠️ No he podido actualizarla: {exc}."
             self._remember_alerts([candidate.rule_id])
@@ -452,7 +517,11 @@ class TelegramRuleController:
         )
 
     def _alert_candidates(self):
-        return alert_candidates(self.repository) if self.repository is not None else ()
+        return (
+            alert_candidates(self.repository, self.current_user_id)
+            if self.repository is not None
+            else ()
+        )
 
     @staticmethod
     def _alert_label(candidate):
@@ -531,17 +600,17 @@ class TelegramRuleController:
         """Remember the alert(s) the bot just created, changed or showed."""
         if self.repository is None:
             return
-        self.repository.set_alert_context(self.authorized_chat_id, rule_ids)
+        self.repository.set_alert_context(self.current_chat_id, rule_ids)
 
     def _remembered(self):
         if self.repository is None:
             return ()
-        return self.repository.get_alert_context(self.authorized_chat_id)
+        return self.repository.get_alert_context(self.current_chat_id)
 
     def _clear_remembered(self):
         if self.repository is None:
             return
-        self.repository.clear_alert_context(self.authorized_chat_id)
+        self.repository.clear_alert_context(self.current_chat_id)
 
     def poll_once(self, offset=None):
         params = {"timeout": 0}
@@ -593,7 +662,7 @@ class TelegramRuleController:
     def send_message(self, text):
         post_with_retry(
             f"{self.url}/sendMessage",
-            json={"chat_id": self.authorized_chat_id, "text": text},
+            json={"chat_id": self.current_chat_id, "text": text},
             timeout=self.timeout,
             retries=self.retries,
             backoff=self.backoff,

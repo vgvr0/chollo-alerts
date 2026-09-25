@@ -6,6 +6,20 @@ from .categories import CategoryRef
 
 
 @dataclass(frozen=True)
+class User:
+    """Telegram identity and notification destination owned by the app."""
+
+    id: int
+    telegram_user_id: str | None
+    telegram_chat_id: str | None
+    username: str | None = None
+    first_name: str | None = None
+    enabled: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class Deal:
     deal_id: str
     title: str

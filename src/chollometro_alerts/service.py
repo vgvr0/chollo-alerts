@@ -1016,7 +1016,7 @@ class AlertService:
         """
         if self._defer(rule_id, deal.deal_id, window):
             return False
-        self.notifier.send(deal, evidence)
+        self._send_notification(rule_id, deal, evidence)
         if not getattr(self.notifier, "dry_run", False):
             self.repository.mark_rule_observation_notified(rule_id, deal.deal_id)
             self.last_summary.telegram_sent += 1
@@ -1053,7 +1053,7 @@ class AlertService:
         if self._defer(rule_id, deal.deal_id, window):
             return 0
         try:
-            self.notifier.send(deal, evidence)
+            self._send_notification(rule_id, deal, evidence)
         except Exception as exc:  # noqa: BLE001 - one delivery must not stop the cycle
             self.repository.mark_rule_observation_pending(
                 rule_id, deal.deal_id, PENDING_TELEGRAM_FAILURE
@@ -1075,6 +1075,17 @@ class AlertService:
             self.repository.mark_notified(deal.deal_id)
         self.last_summary.telegram_sent += 1
         return 1
+
+    def _send_notification(self, rule_id, deal, evidence):
+        sender = getattr(self.notifier, "send", None)
+        if sender is None:
+            return
+        try:
+            sender(deal, evidence, rule_id=rule_id)
+        except TypeError as exc:
+            if "rule_id" not in str(exc):
+                raise
+            sender(deal, evidence)
 
     def _deliver_pending_notifications(self, rules):
         """Deliver the pairs a Telegram failure or a window left pending.

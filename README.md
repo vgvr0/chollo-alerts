@@ -173,6 +173,9 @@ start-up). The names and defaults below are the ones the code really uses
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | *required* | Bot token used to send alerts. |
 | `TELEGRAM_CHAT_ID` | *required* | Authorised chat that receives them. |
+| `TELEGRAM_MULTIUSER_ENABLED` | `false` | Enable Telegram ownership and per-user routing. |
+| `TELEGRAM_AUTO_REGISTER` | `false` | Register unknown Telegram users automatically (keep disabled for a closed bot). |
+| `TELEGRAM_USER_ID` | optional | Stable Telegram user id for the legacy/default account, when known. |
 | `CHOLLOMETRO_GRAPHQL_DISCOVERY` | `true` | Enables the GraphQL discovery feed. `false` keeps the HTML-only behaviour and never touches the endpoint. |
 | `CHOLLOMETRO_GRAPHQL_WINDOW_LIMIT` | unset | Unset = the request sends no `limit` and the endpoint answers with its widest window (30 threads). A value between 1 and 20 asks for that many explicitly. Anything else is rejected at start-up. |
 | `CHOLLOMETRO_GRAPHQL_PATH` | `/graphql` | Endpoint path, relative to the site. |
@@ -431,6 +434,31 @@ output and structured logs.
 ## 💾 Persistence
 
 Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
+
+### Telegram multiusuario
+
+Con `TELEGRAM_MULTIUSER_ENABLED=true`, cada regla guarda `user_id` y las
+operaciones de Telegram se filtran por el usuario estable `from.id`; el
+`chat.id` se conserva como destino de notificación. `username` y `first_name`
+son solo metadatos. Los usuarios desconocidos reciben un rechazo mientras
+`TELEGRAM_AUTO_REGISTER=false` (la política recomendada para una instalación
+cerrada). El comando administrativo `chollometro-alerts users` muestra el id,
+destino, estado y número de reglas sin exponer metadatos innecesarios.
+El modo multiusuario acepta únicamente updates cuyo `message.chat.type` sea
+`private`; grupos, supergrupos, canales y tipos desconocidos se rechazan antes
+de resolver identidad, auto-registrar usuarios o ejecutar el LLM.
+
+La migración integrada de SQLite crea `legacy/default` usando
+`TELEGRAM_CHAT_ID` y, si existe, `TELEGRAM_USER_ID`, y asigna las reglas
+existentes conservando sus ids y tablas de observaciones/matches. Si no hay
+ninguna identidad configurada, no inventa un usuario: las filas quedan en
+compatibilidad legacy hasta que el operador configure el destino.
+
+`DEDUP_KEY = (deal_id, rule_id)`; como `rule_id` pertenece a un usuario, el
+mismo deal puede notificarse legítimamente a dos usuarios distintos. La
+extracción de producto sigue cacheada por deal, fingerprint de contenido y
+versión del extractor, por lo que varias reglas/usuarios reutilizan una sola
+extracción.
 
 | Table | What it holds |
 | --- | --- |
