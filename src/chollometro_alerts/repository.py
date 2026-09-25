@@ -4,6 +4,7 @@ import os
 import sqlite3
 import threading
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -75,6 +76,19 @@ class DealRepository:
         self._connections = {}
         self._connections_lock = threading.Lock()
         self._initialized = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Explicit lifecycle owners call close(); this is only a last-resort
+        # guard for short-lived callers that abandon a repository object.
+        with suppress(Exception):
+            self.close_current_thread()
 
     @property
     def db(self):

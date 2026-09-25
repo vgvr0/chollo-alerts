@@ -269,152 +269,173 @@ def main():
     a = p.parse_args()
     if a.command == "maintenance":
         repository = DealRepository(a.db)
-        settings = RetentionSettings.from_env()
-        retention = RetentionService(repository, settings)
-        if a.maintenance_command == "prune":
-            result = retention.run(dry_run=a.dry_run)
-            print(f"DRY_RUN={str(result.dry_run).lower()}")
-            print(f"DELETED_SNAPSHOTS={result.deleted_snapshots}")
-            print(f"DELETED_CACHE_ENTRIES={result.deleted_cache_entries}")
-            print(f"DELETED_ERROR_HISTORY={result.deleted_error_history}")
-            print(f"DELETED_SCAN_RUNS={result.deleted_scan_runs}")
-            print(f"BATCHES={result.batches}")
+        try:
+            settings = RetentionSettings.from_env()
+            retention = RetentionService(repository, settings)
+            if a.maintenance_command == "prune":
+                result = retention.run(dry_run=a.dry_run)
+                print(f"DRY_RUN={str(result.dry_run).lower()}")
+                print(f"DELETED_SNAPSHOTS={result.deleted_snapshots}")
+                print(f"DELETED_CACHE_ENTRIES={result.deleted_cache_entries}")
+                print(f"DELETED_ERROR_HISTORY={result.deleted_error_history}")
+                print(f"DELETED_SCAN_RUNS={result.deleted_scan_runs}")
+                print(f"BATCHES={result.batches}")
+                return
+            if a.maintenance_command == "status":
+                counts = repository.retention_counts(settings)
+                status = repository.runtime_status()
+                print(
+                    f"DB_BYTES={os.path.getsize(a.db) if os.path.exists(a.db) else 0}"
+                )
+                print(
+                    f"LAST_MAINTENANCE_AT={status.get('last_retention_finished_at') or 'NEVER'}"
+                )
+                for name, count in counts.items():
+                    print(f"ELIGIBLE_{name.upper()}={count}")
+                return
+            repository.vacuum()
+            print("VACUUM=SUCCESS")
             return
-        if a.maintenance_command == "status":
-            counts = repository.retention_counts(settings)
-            status = repository.runtime_status()
-            print(f"DB_BYTES={os.path.getsize(a.db) if os.path.exists(a.db) else 0}")
-            print(
-                f"LAST_MAINTENANCE_AT={status.get('last_retention_finished_at') or 'NEVER'}"
-            )
-            for name, count in counts.items():
-                print(f"ELIGIBLE_{name.upper()}={count}")
-            return
-        repository.vacuum()
-        print("VACUUM=SUCCESS")
-        return
+        finally:
+            repository.close()
     if a.command == "health":
         raise SystemExit(health_check(a.db))
     if a.command == "users":
         repository = DealRepository(a.db)
-        print("id telegram_user_id telegram_chat_id enabled rules_count")
-        for row in repository.list_users():
-            print(*row)
-        return
+        try:
+            print("id telegram_user_id telegram_chat_id enabled rules_count")
+            for row in repository.list_users():
+                print(*row)
+            return
+        finally:
+            repository.close()
     if a.command == "alert":
         repository = DealRepository(a.db)
-        if a.alert_command == "list":
-            # Same boundary as the Telegram listing: every stored rule, with the
-            # canonical `AlertRule` resolved through `rule_from_listing()` (a
-            # structured row, or a legacy row reconstructed by `rule_from_row`).
-            # Read-only: nothing is written, not even the legacy rows.
-            rows = repository.list_alert_rules()
-            print(format_alert_list(rows, repository.rule_from_listing))
-            return
-        if a.alert_command == "test":
-            # Read-only simulator: no scraper, no LLM, no Telegram, no writes.
-            try:
-                report = ReplayEngine(repository).replay(a.rule_id, limit=a.limit)
-            except RuleNotFoundError as exc:
-                p.error(str(exc))
-            print(format_replay(report))
-            return
-        if a.alert_command == "legacy-repair":
-            proposals = (
-                repair_legacy_rules(repository, dry_run=False)
-                if a.apply
-                else audit_legacy_rules(repository)
-            )
-            for proposal in proposals:
-                if proposal.classification == "STRUCTURED":
-                    action = "NO_CHANGE"
-                elif proposal.actionable:
-                    action = "UPDATED" if a.apply else "WOULD_UPDATE"
-                else:
-                    action = "MANUAL_REVIEW"
-                print(f"RULE #{proposal.rule_id}")
-                print(f"query: {proposal.query}")
-                print(f"classification: {proposal.classification}")
-                print(f"proposed brand: {proposal.brand or 'N/D'}")
-                print(f"confidence: {'SAFE' if proposal.actionable else 'MANUAL'}")
-                print(f"action: {action}")
-                print(f"reason: {proposal.reason}")
-            return
-        parser = DeepSeekAlertRuleParser(DeepSeekProductExtractor())
         try:
-            rule = parser.parse(a.text)
-        except (ValueError, ConfigurationError, requests.RequestException) as exc:
-            p.error(f"No se pudo interpretar la alerta: {type(exc).__name__}")
-        print(rule.model_dump_json(indent=2))
-        if a.alert_command == "add":
-            print(f"RULE_ID={repository.save_alert_rule(rule, a.text)}")
-        return
+            if a.alert_command == "list":
+                # Same boundary as the Telegram listing: every stored rule, with the
+                # canonical `AlertRule` resolved through `rule_from_listing()` (a
+                # structured row, or a legacy row reconstructed by `rule_from_row`).
+                # Read-only: nothing is written, not even the legacy rows.
+                rows = repository.list_alert_rules()
+                print(format_alert_list(rows, repository.rule_from_listing))
+                return
+            if a.alert_command == "test":
+                # Read-only simulator: no scraper, no LLM, no Telegram, no writes.
+                try:
+                    report = ReplayEngine(repository).replay(a.rule_id, limit=a.limit)
+                except RuleNotFoundError as exc:
+                    p.error(str(exc))
+                print(format_replay(report))
+                return
+            if a.alert_command == "legacy-repair":
+                proposals = (
+                    repair_legacy_rules(repository, dry_run=False)
+                    if a.apply
+                    else audit_legacy_rules(repository)
+                )
+                for proposal in proposals:
+                    if proposal.classification == "STRUCTURED":
+                        action = "NO_CHANGE"
+                    elif proposal.actionable:
+                        action = "UPDATED" if a.apply else "WOULD_UPDATE"
+                    else:
+                        action = "MANUAL_REVIEW"
+                    print(f"RULE #{proposal.rule_id}")
+                    print(f"query: {proposal.query}")
+                    print(f"classification: {proposal.classification}")
+                    print(f"proposed brand: {proposal.brand or 'N/D'}")
+                    print(f"confidence: {'SAFE' if proposal.actionable else 'MANUAL'}")
+                    print(f"action: {action}")
+                    print(f"reason: {proposal.reason}")
+                return
+            parser = DeepSeekAlertRuleParser(DeepSeekProductExtractor())
+            try:
+                rule = parser.parse(a.text)
+            except (ValueError, ConfigurationError, requests.RequestException) as exc:
+                p.error(f"No se pudo interpretar la alerta: {type(exc).__name__}")
+            print(rule.model_dump_json(indent=2))
+            if a.alert_command == "add":
+                print(f"RULE_ID={repository.save_alert_rule(rule, a.text)}")
+            return
+        finally:
+            repository.close()
     if a.command == "test-llm":
         test_llm(a.text, p)
         return
     if a.command == "run-rules":
-        service = AlertService(ChollometroClient(), DealRepository(a.db), None)
-        summary = {}
-        for rule_id, query, deal, rule, result in service.dry_run_active_rules(a.pages):
-            price_unit = _price_unit_label(rule)
-            extraction = deal.product_extraction
-            product_match = not rule.product_type or product_type_matches(
-                rule.product_type, getattr(extraction, "product_type", None)
-            )
-            brand_match = (
-                not rule.brand
-                or (getattr(extraction, "brand", "") or "").casefold()
-                == rule.brand.casefold()
-            )
-            price_match = result.reason not in PRICE_REJECTIONS
-            print(
-                f'rule={rule_id} deal={deal.deal_id} title="{deal.title}" brand={getattr(extraction, "brand", None) or "N/D"} price={deal.price if deal.price is not None else "N/D"} price_unit={price_unit} price_per_unit={deal.price_per_unit if deal.price_per_unit is not None else "N/D"} product_match={str(product_match).lower()} brand_match={str(brand_match).lower()} price_match={str(price_match).lower()} matched={str(result.accepted).lower()} result={"WOULD_NOTIFY" if result.accepted else result.reason}'
-            )
-            bucket = summary.setdefault(
-                rule_id,
-                {
-                    "QUERY": query,
-                    "CANDIDATES": 0,
-                    "MATCHED": 0,
-                    "WOULD_NOTIFY": 0,
-                    "REJECTED_PRODUCT": 0,
-                    "REJECTED_BRAND": 0,
-                    "REJECTED_PRICE": 0,
-                },
-            )
-            bucket["CANDIDATES"] += 1
-            bucket["MATCHED"] += int(result.accepted)
-            bucket["WOULD_NOTIFY"] += int(result.accepted)
-            if result.reason == "REJECTED_PRODUCT":
-                bucket["REJECTED_PRODUCT"] += 1
-            if result.reason == "REJECTED_BRAND":
-                bucket["REJECTED_BRAND"] += 1
-            if result.reason in PRICE_REJECTIONS:
-                bucket["REJECTED_PRICE"] += 1
-        # Distinguishes a completed dry run from one Chollometro could not serve.
-        print(f"SCAN_STATUS={service.last_scan_status}")
-        print("SUMMARY")
-        for rule_id, values in summary.items():
-            print(f"RULE_ID={rule_id}")
-            for key, value in values.items():
-                print(f"{key}={value}")
-        return
+        repository = DealRepository(a.db)
+        try:
+            service = AlertService(ChollometroClient(), repository, None)
+            summary = {}
+            for rule_id, query, deal, rule, result in service.dry_run_active_rules(
+                a.pages
+            ):
+                price_unit = _price_unit_label(rule)
+                extraction = deal.product_extraction
+                product_match = not rule.product_type or product_type_matches(
+                    rule.product_type, getattr(extraction, "product_type", None)
+                )
+                brand_match = (
+                    not rule.brand
+                    or (getattr(extraction, "brand", "") or "").casefold()
+                    == rule.brand.casefold()
+                )
+                price_match = result.reason not in PRICE_REJECTIONS
+                print(
+                    f'rule={rule_id} deal={deal.deal_id} title="{deal.title}" brand={getattr(extraction, "brand", None) or "N/D"} price={deal.price if deal.price is not None else "N/D"} price_unit={price_unit} price_per_unit={deal.price_per_unit if deal.price_per_unit is not None else "N/D"} product_match={str(product_match).lower()} brand_match={str(brand_match).lower()} price_match={str(price_match).lower()} matched={str(result.accepted).lower()} result={"WOULD_NOTIFY" if result.accepted else result.reason}'
+                )
+                bucket = summary.setdefault(
+                    rule_id,
+                    {
+                        "QUERY": query,
+                        "CANDIDATES": 0,
+                        "MATCHED": 0,
+                        "WOULD_NOTIFY": 0,
+                        "REJECTED_PRODUCT": 0,
+                        "REJECTED_BRAND": 0,
+                        "REJECTED_PRICE": 0,
+                    },
+                )
+                bucket["CANDIDATES"] += 1
+                bucket["MATCHED"] += int(result.accepted)
+                bucket["WOULD_NOTIFY"] += int(result.accepted)
+                if result.reason == "REJECTED_PRODUCT":
+                    bucket["REJECTED_PRODUCT"] += 1
+                if result.reason == "REJECTED_BRAND":
+                    bucket["REJECTED_BRAND"] += 1
+                if result.reason in PRICE_REJECTIONS:
+                    bucket["REJECTED_PRICE"] += 1
+            # Distinguishes a completed dry run from one Chollometro could not serve.
+            print(f"SCAN_STATUS={service.last_scan_status}")
+            print("SUMMARY")
+            for rule_id, values in summary.items():
+                print(f"RULE_ID={rule_id}")
+                for key, value in values.items():
+                    print(f"{key}={value}")
+            return
+        finally:
+            repository.close()
     if a.command == "telegram-poll":
         extractor = DeepSeekProductExtractor()
         try:
             telegram = TelegramSettings.from_env()
         except ConfigurationError as exc:
             p.error(f"Error de configuración: {exc}")
-        controller = TelegramRuleController(
-            bot_token=telegram.bot_token,
-            authorized_chat_id=telegram.authorized_chat_id,
-            repository=DealRepository(a.db),
-            translator=extractor,
-            multiuser_enabled=telegram.multiuser_enabled,
-            auto_register=telegram.auto_register,
-        )
-        controller.poll_once()
-        return
+        repository = DealRepository(a.db)
+        try:
+            controller = TelegramRuleController(
+                bot_token=telegram.bot_token,
+                authorized_chat_id=telegram.authorized_chat_id,
+                repository=repository,
+                translator=extractor,
+                multiuser_enabled=telegram.multiuser_enabled,
+                auto_register=telegram.auto_register,
+            )
+            controller.poll_once()
+            return
+        finally:
+            repository.close()
     if a.command in {"telegram-listen", "run", "scan"}:
         try:
             telegram = TelegramSettings.from_env()
@@ -482,6 +503,7 @@ def main():
         finally:
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
+            repository.close()
         return
     if a.command != "baseline" and not getattr(a, "dry_run", False):
         missing = [
@@ -495,7 +517,8 @@ def main():
                 + ", ".join(missing)
                 + ". Configúralas en .env en la raíz del proyecto o usa check --dry-run."
             )
-    service = AlertService(ChollometroClient(), DealRepository(a.db), None)
+    repository = DealRepository(a.db)
+    service = AlertService(ChollometroClient(), repository, None)
     if a.command == "baseline":
         try:
             count = service.baseline(["leche", "cerveza"], a.pages, a.dry_run)
@@ -504,6 +527,7 @@ def main():
             report_scan_failure(exc)
             raise SystemExit(1) from exc
         print(count)
+        repository.close()
         return
     notifier = (
         DryRunNotifier()
@@ -523,6 +547,7 @@ def main():
     finally:
         if hasattr(service, "last_summary"):
             print(service.last_summary.format_metrics())
+        repository.close()
     if service.last_scan_status == SCAN_FAILED:
         # `check` is the legacy CLI entry point: the exit code is its failure
         # signal for cron/monitoring, the metrics line is the detail.
