@@ -1,5 +1,15 @@
 # Secrets
 .env
+.env.*
+!.env.example
+
+# Sensitive exports and credentials
+credentials*
+secrets*
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Python
 __pycache__/
@@ -17,9 +27,20 @@ venv/
 .mypy_cache/
 
 # Local database
+*.sqlite
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+*.db
+*.dump
+*.bak
+*.log
+
+# Build and coverage artifacts
+dist/
+build/
+.coverage
+htmlcov/
 
 # IDE / OS
 .vscode/
