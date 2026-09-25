@@ -311,23 +311,41 @@ class DealRepository:
             ).fetchone()
             or ("",)
         )[0] or ""
-        if "UNIQUE(query" in schema and "user_id" not in schema:
-            db.execute("ALTER TABLE alert_rules RENAME TO alert_rules_legacy")
-            db.execute("""CREATE TABLE alert_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
-                product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
-                price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-                state TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL, original_text TEXT, structured_rule TEXT,
-                schema_version INTEGER, user_id INTEGER REFERENCES users(id)
-            )""")
-            db.execute("""INSERT INTO alert_rules
-                (id,query,product_type,brand,max_price,price_unit,enabled,state,
-                 created_at,updated_at,original_text,structured_rule,schema_version,user_id)
-                SELECT id,query,product_type,brand,max_price,price_unit,enabled,state,
-                 created_at,updated_at,original_text,structured_rule,schema_version,user_id
-                FROM alert_rules_legacy""")
-            db.execute("DROP TABLE alert_rules_legacy")
+        # Older schemas used a table-level UNIQUE constraint that ignored
+        # ownership. Rebuild only that table, copying and validating every
+        # alert row inside a savepoint; all match/observation/feed state lives
+        # in separate tables and is therefore retained untouched.
+        global_unique = "UNIQUE(query" in schema or "UNIQUE (query" in schema
+        if global_unique:
+            db.execute("SAVEPOINT alert_ownership_migration")
+            try:
+                before = db.execute("SELECT COUNT(*) FROM alert_rules").fetchone()[0]
+                db.execute("ALTER TABLE alert_rules RENAME TO alert_rules_legacy")
+                db.execute("""CREATE TABLE alert_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT,
+                    product_type TEXT, brand TEXT, max_price TEXT NOT NULL,
+                    price_unit TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                    state TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, original_text TEXT, structured_rule TEXT,
+                    schema_version INTEGER, user_id INTEGER REFERENCES users(id)
+                )""")
+                db.execute("""INSERT INTO alert_rules
+                    (id,query,product_type,brand,max_price,price_unit,enabled,state,
+                     created_at,updated_at,original_text,structured_rule,schema_version,user_id)
+                    SELECT id,query,product_type,brand,max_price,price_unit,enabled,state,
+                     created_at,updated_at,original_text,structured_rule,schema_version,user_id
+                    FROM alert_rules_legacy""")
+                after = db.execute("SELECT COUNT(*) FROM alert_rules").fetchone()[0]
+                if before != after:
+                    raise RuntimeError(
+                        "alert ownership migration did not preserve all rules"
+                    )
+                db.execute("DROP TABLE alert_rules_legacy")
+                db.execute("RELEASE SAVEPOINT alert_ownership_migration")
+            except Exception:
+                db.execute("ROLLBACK TO SAVEPOINT alert_ownership_migration")
+                db.execute("RELEASE SAVEPOINT alert_ownership_migration")
+                raise
         db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_owner_identity ON alert_rules(user_id,query,product_type,brand,max_price,price_unit)"
         )
@@ -620,7 +638,7 @@ class DealRepository:
         query = intent.query or intent.product_type or intent.brand
         scope = " AND user_id=?" if user_id is not None else ""
         row = self.db.execute(
-            f"SELECT id FROM alert_rules WHERE query=? AND COALESCE(brand,'')=COALESCE(?, ''){scope}",
+            f"SELECT id FROM alert_rules WHERE query IS ? AND COALESCE(brand,'')=COALESCE(?, ''){scope}",
             (query, intent.brand, user_id)
             if user_id is not None
             else (query, intent.brand),
@@ -637,7 +655,7 @@ class DealRepository:
         legacy_unit = intent.price_unit or "absolute"
         if intent.action == "create":
             duplicate = self.db.execute(
-                f"SELECT 1 FROM alert_rules WHERE query=? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?{scope}",
+                f"SELECT 1 FROM alert_rules WHERE query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?{scope}",
                 (
                     query,
                     intent.product_type,
@@ -800,9 +818,11 @@ class DealRepository:
         self.db.commit()
         return cur.lastrowid
 
-    def load_alert_rule(self, rule_id):
+    def load_alert_rule(self, rule_id, user_id=None):
         row = self.db.execute(
-            "SELECT structured_rule FROM alert_rules WHERE id=?", (rule_id,)
+            "SELECT structured_rule FROM alert_rules WHERE id=?"
+            + (" AND user_id=?" if user_id is not None else ""),
+            (rule_id, user_id) if user_id is not None else (rule_id,),
         ).fetchone()
         if not row or not row[0]:
             return None
@@ -847,16 +867,19 @@ class DealRepository:
             (*row, structured[0] if structured is not None else None)
         )
 
-    def rule_by_id(self, rule_id):
+    def rule_by_id(self, rule_id, user_id=None):
         """Load any persisted rule (structured or legacy) through `rule_from_row`."""
         row = self.db.execute(
-            "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules WHERE id=?",
-            (rule_id,),
+            "SELECT id, query, product_type, brand, max_price, price_unit, enabled FROM alert_rules WHERE id=?"
+            + (" AND user_id=?" if user_id is not None else ""),
+            (rule_id, user_id) if user_id is not None else (rule_id,),
         ).fetchone()
         if row is None:
             return None
         structured = self.db.execute(
-            "SELECT structured_rule FROM alert_rules WHERE id=?", (rule_id,)
+            "SELECT structured_rule FROM alert_rules WHERE id=?"
+            + (" AND user_id=?" if user_id is not None else ""),
+            (rule_id, user_id) if user_id is not None else (rule_id,),
         ).fetchone()
         return self.rule_from_row(
             (*row, structured[0] if structured is not None else None)
@@ -925,10 +948,19 @@ class DealRepository:
             product_text=title,
         )
 
-    def attach_alert_rule(self, rule_id, rule, original_text=None):
+    def attach_alert_rule(self, rule_id, rule, original_text=None, user_id=None):
         self.db.execute(
-            "UPDATE alert_rules SET structured_rule=?,schema_version=?,original_text=COALESCE(?,original_text) WHERE id=?",
-            (rule.model_dump_json(), rule.schema_version, original_text, rule_id),
+            "UPDATE alert_rules SET structured_rule=?,schema_version=?,original_text=COALESCE(?,original_text) WHERE id=?"
+            + (" AND user_id=?" if user_id is not None else ""),
+            (
+                rule.model_dump_json(),
+                rule.schema_version,
+                original_text,
+                rule_id,
+                user_id,
+            )
+            if user_id is not None
+            else (rule.model_dump_json(), rule.schema_version, original_text, rule_id),
         )
         self.db.commit()
 
@@ -943,10 +975,11 @@ class DealRepository:
             "SELECT id,query,product_type,brand,max_price,enabled,structured_rule FROM alert_rules WHERE structured_rule IS NOT NULL ORDER BY id"
         ).fetchall()
 
-    def get_rule(self, rule_id):
+    def get_rule(self, rule_id, user_id=None):
         return self.db.execute(
-            "SELECT id,query,product_type,brand,max_price,price_unit,enabled,state FROM alert_rules WHERE id=?",
-            (rule_id,),
+            "SELECT id,query,product_type,brand,max_price,price_unit,enabled,state FROM alert_rules WHERE id=?"
+            + (" AND user_id=?" if user_id is not None else ""),
+            (rule_id, user_id) if user_id is not None else (rule_id,),
         ).fetchone()
 
     def alert_rule_created_at(self, rule_id):
@@ -1091,16 +1124,28 @@ class DealRepository:
         ).fetchone()
         return self.deal_from_row(row) if row else None
 
-    def set_rule_state(self, rule_id, state, enabled=None):
+    def set_rule_state(self, rule_id, state, enabled=None, user_id=None):
+        scope = " AND user_id=?" if user_id is not None else ""
         if enabled is None:
             self.db.execute(
-                "UPDATE alert_rules SET state=?,updated_at=? WHERE id=?",
-                (state, datetime.now(UTC).isoformat(), rule_id),
+                "UPDATE alert_rules SET state=?,updated_at=? WHERE id=?" + scope,
+                (state, datetime.now(UTC).isoformat(), rule_id, user_id)
+                if user_id is not None
+                else (state, datetime.now(UTC).isoformat(), rule_id),
             )
         else:
             self.db.execute(
-                "UPDATE alert_rules SET state=?,enabled=?,updated_at=? WHERE id=?",
-                (state, int(enabled), datetime.now(UTC).isoformat(), rule_id),
+                "UPDATE alert_rules SET state=?,enabled=?,updated_at=? WHERE id=?"
+                + scope,
+                (
+                    state,
+                    int(enabled),
+                    datetime.now(UTC).isoformat(),
+                    rule_id,
+                    user_id,
+                )
+                if user_id is not None
+                else (state, int(enabled), datetime.now(UTC).isoformat(), rule_id),
             )
         self.db.commit()
 

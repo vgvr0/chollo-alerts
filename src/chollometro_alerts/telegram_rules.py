@@ -421,7 +421,10 @@ class TelegramRuleController:
             )
             if target:
                 self.repository.attach_alert_rule(
-                    target[0], intent_to_rule(intent), text
+                    target[0],
+                    intent_to_rule(intent),
+                    text,
+                    user_id=self.current_user_id,
                 )
                 # From now on, "esa alerta" means the one just created.
                 self._remember_alerts([target[0]])
@@ -431,7 +434,9 @@ class TelegramRuleController:
             rule = next((r for r in rows if r[1] == query), None)
             # A rule whose baseline could not be taken stays disabled, and
             # retrying the same message must be allowed to complete it.
-            if rule is not None and self.repository.get_rule(rule[0])[7] in {
+            if rule is not None and self.repository.get_rule(
+                rule[0], user_id=self.current_user_id
+            )[7] in {
                 "INITIALIZING",
                 "INITIALIZING_FAILED",
             }:
