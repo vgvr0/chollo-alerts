@@ -7,14 +7,14 @@ name = "chollometro-alerts"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-    "pydantic>=2.0",
+    "requests>=2.34.2",
+    "beautifulsoup4>=4.15.0",
+    "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     # `zoneinfo` reads the IANA database from the system; Windows does not ship
     # it, and the notification windows are defined in a real timezone
     # (`Europe/Madrid` by default), so the data is a declared dependency.
-    "tzdata>=2024.1",
+    "tzdata>=2026.4",
 ]
 
 [project.optional-dependencies]
