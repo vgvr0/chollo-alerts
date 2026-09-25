@@ -14,6 +14,14 @@ is not enough.
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/github/license/vgvr0/chollometro-alerts)](LICENSE)
 
+<p align="center">
+  <img
+    src="assets/chollometro-alerts-banner.png"
+    alt="Chollometro Alerts"
+    width="100%"
+  />
+</p>
+
 ## 💬 Natural-language alerts
 
 These are examples of alert sentences supported by the current parser and rule engine:
