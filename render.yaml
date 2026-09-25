@@ -9,11 +9,11 @@ services:
     numInstances: 1
     disk:
       name: chollometro-data
-      mountPath: /data
+      mountPath: /app/data
       sizeGB: 1
     envVars:
       - key: DATABASE_PATH
-        value: /data/chollometro.sqlite3
+        value: /app/data/chollometro.sqlite3
       - key: SCAN_INTERVAL_MINUTES
         value: "10"
       - key: ALERT_TIMEZONE
