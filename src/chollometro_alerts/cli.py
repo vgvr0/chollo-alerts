@@ -143,6 +143,25 @@ def build_feed_client():
     return GraphQLFeedClient(feed_settings=settings) if settings.enabled else None
 
 
+def build_alert_service(telegram, repository):
+    """Build the scanner service shared by the combined and split runtimes."""
+    notifier = (
+        TelegramNotifier(
+            telegram.bot_token,
+            telegram.authorized_chat_id,
+            repository=repository,
+        )
+        if telegram.multiuser_enabled
+        else TelegramNotifier(telegram.bot_token, telegram.authorized_chat_id)
+    )
+    return AlertService(
+        ChollometroClient(),
+        repository,
+        notifier,
+        feed=build_feed_client(),
+    )
+
+
 def _result_label(entry):
     if entry.decision is ReplayDecision.MATCH:
         return "MATCH"
@@ -443,25 +462,12 @@ def main():
         except ConfigurationError as exc:
             p.error(f"Error de configuración: {exc}")
         repository = DealRepository(a.db)
-        extractor = create_extractor()
-        service = None
-        if a.command == "run":
-            service = AlertService(
-                ChollometroClient(),
-                repository,
-                (
-                    TelegramNotifier(
-                        telegram.bot_token,
-                        telegram.authorized_chat_id,
-                        repository=repository,
-                    )
-                    if telegram.multiuser_enabled
-                    else TelegramNotifier(
-                        telegram.bot_token, telegram.authorized_chat_id
-                    )
-                ),
-                feed=build_feed_client(),
-            )
+        extractor = create_extractor() if a.command != "scan" else None
+        service = (
+            build_alert_service(telegram, repository)
+            if a.command in {"run", "scan"}
+            else None
+        )
         controller = None
         if a.command != "scan":
             controller = TelegramRuleController(
