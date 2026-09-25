@@ -372,6 +372,11 @@ class TelegramRuleController:
         stored alert instead of building a second one from the sentence.
         """
         operation = classify_alert_operation(text)
+        if operation == "CAPABILITY_QUESTION":
+            return (
+                "✅ Sí. Puedo crear alertas por temperatura de Chollometro, "
+                "por ejemplo: «Quiero alertas si la temperatura es mayor a 300»."
+            )
         if operation == "LIST_ALERTS":
             return self._handle_list_alerts()
         if operation == "DELETE_ALERT":
@@ -405,20 +410,32 @@ class TelegramRuleController:
             # An update that names no alert can only be about a stored one.
             return self._handle_update_alert(text)
         intent = validate_intent(intent)
+        existing_ids = {
+            row[0]
+            for row in self.repository.list_alert_rules(user_id=self.current_user_id)
+        }
         rows = self.repository.apply_alert_intent(intent, user_id=self.current_user_id)
         if intent.action in {"create", "update"}:
             target = next(
-                (
-                    row
-                    for row in rows
-                    if row[1] == (intent.query or intent.product_type or intent.brand)
-                    or (
-                        not row[1]
-                        and not (intent.query or intent.product_type or intent.brand)
-                    )
-                ),
+                (row for row in rows if row[0] not in existing_ids),
                 None,
             )
+            if target is None:
+                target = next(
+                    (
+                        row
+                        for row in rows
+                        if row[1]
+                        == (intent.query or intent.product_type or intent.brand)
+                        or (
+                            not row[1]
+                            and not (
+                                intent.query or intent.product_type or intent.brand
+                            )
+                        )
+                    ),
+                    None,
+                )
             if target:
                 self.repository.attach_alert_rule(
                     target[0],

@@ -363,8 +363,13 @@ class DealRepository:
                 db.execute("ROLLBACK TO SAVEPOINT alert_ownership_migration")
                 db.execute("RELEASE SAVEPOINT alert_ownership_migration")
                 raise
+        # The legacy identity columns do not contain structured constraints
+        # such as temperature_min/max.  A unique index here would reject two
+        # global temperature alerts with different thresholds for one owner.
+        # Canonical deduplication is performed by apply_alert_intent instead.
+        db.execute("DROP INDEX IF EXISTS uq_alert_rules_owner_identity")
         db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_owner_identity ON alert_rules(user_id,query,product_type,brand,max_price,price_unit)"
+            "CREATE INDEX IF NOT EXISTS ix_alert_rules_owner_identity ON alert_rules(user_id,query,product_type,brand,max_price,price_unit)"
         )
 
     def user_for_id(self, user_id):
@@ -737,8 +742,8 @@ class DealRepository:
         # says nothing about a per-unit price.
         legacy_unit = intent.price_unit or "absolute"
         if intent.action == "create":
-            duplicate = self.db.execute(
-                f"SELECT 1 FROM alert_rules WHERE query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?{scope}",
+            duplicate_rows = self.db.execute(
+                f"SELECT id, structured_rule FROM alert_rules WHERE query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?{scope}",
                 (
                     query,
                     intent.product_type,
@@ -755,7 +760,25 @@ class DealRepository:
                     legacy_price,
                     legacy_unit,
                 ),
-            ).fetchone()
+            ).fetchall()
+            if intent.has_temperature:
+                # Temperature is part of the canonical structured rule, not
+                # the legacy columns used by this table's historical unique
+                # identity.  Compare it explicitly so global thresholds such
+                # as 300 and 500 can coexist while an exact retry deduplicates.
+                duplicate = False
+                for _, structured_rule in duplicate_rows:
+                    if not structured_rule:
+                        continue
+                    stored = AlertRule.model_validate_json(structured_rule)
+                    if (
+                        stored.constraints.temperature_min == intent.temperature_min
+                        and stored.constraints.temperature_max == intent.temperature_max
+                    ):
+                        duplicate = True
+                        break
+            else:
+                duplicate = bool(duplicate_rows)
             if not duplicate:
                 self.db.execute(
                     "INSERT INTO alert_rules(query,product_type,brand,max_price,price_unit,enabled,state,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",

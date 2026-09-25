@@ -226,6 +226,13 @@ class AlertIntent(BaseModel):
 def validate_intent(intent: AlertIntent) -> AlertIntent:
     if intent.action == "list":
         return intent
+    # Temperature is a first-class deal fact, so it is sufficient identity for
+    # a global alert.  Keep the identity requirement for unconstrained alerts;
+    # this does not weaken product/brand validation for the other alert types.
+    if intent.has_temperature:
+        if (intent.max_price is not None) != (intent.price_unit is not None):
+            raise ValueError("Falta el precio máximo y su unidad")
+        return intent
     if not (
         intent.query
         or intent.product_type
@@ -236,12 +243,7 @@ def validate_intent(intent: AlertIntent) -> AlertIntent:
         raise ValueError("Falta el producto o la marca")
     if (intent.max_price is not None) != (intent.price_unit is not None):
         raise ValueError("Falta el precio máximo y su unidad")
-    if (
-        intent.has_price
-        or intent.has_temperature
-        or intent.category_include
-        or intent.category_exclude
-    ):
+    if intent.has_price or intent.category_include or intent.category_exclude:
         return intent
     if not has_specific_relevance(intent):
         raise ValueError(

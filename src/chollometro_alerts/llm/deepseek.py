@@ -187,8 +187,11 @@ class DeepSeekProductExtractor:
                 "grados de Chollometro ('más de 500 grados' -> 500, 'al menos "
                 "500°' -> 500, 'menos de 100 grados' -> máximo 100, 'entre "
                 "100 y 500 grados' -> mínimo 100 y máximo 500) y solo se "
-                "rellenan cuando el número lleva grados o °; un precio en "
-                "euros nunca es una temperatura. 'no quiero chollos por "
+                "rellenan cuando el número lleva grados, ° o aparece junto a "
+                "la palabra temperatura ('temperatura mayor a 300', "
+                "'temperatura > 300'); un precio en euros nunca es una "
+                "temperatura. Una alerta cuyo único criterio sea temperatura "
+                "es válida y no necesita query, producto ni marca. 'no quiero chollos por "
                 "debajo de 100 grados' pide un mínimo de 100. "
                 "No inventes precios ni datos faltantes."
             ),
