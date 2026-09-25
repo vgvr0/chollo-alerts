@@ -35,7 +35,12 @@ from .alert_rule import AlertRule, NotificationWindow
 from .alert_text import extract_merchant_mentions, extract_notification_window
 
 AlertOperation = Literal[
-    "CREATE_ALERT", "DELETE_ALERT", "UPDATE_ALERT", "LIST_ALERTS", "UNKNOWN"
+    "CREATE_ALERT",
+    "DELETE_ALERT",
+    "UPDATE_ALERT",
+    "LIST_ALERTS",
+    "CAPABILITY_QUESTION",
+    "UNKNOWN",
 ]
 
 # The `AlertIntent.action` each operation maps to, for the surfaces that still
@@ -196,6 +201,15 @@ _LIST_CUES = re.compile(
     r"|\balertas?\s+(?:activas|configuradas|guardadas|tengo|hay)\b"
 )
 
+# Informational capability questions must not be mistaken for a request to
+# list stored rules.  They describe what the bot can do, not what the user
+# currently has configured.
+_CAPABILITY_CUES = re.compile(
+    r"\b(?:tienes|hay|puedes|se pueden|es posible)\s+"
+    r"(?:crear\s+)?alertas?\s+(?:por|de)\s+temperatura\b"
+    r"|\balertas?\s+(?:por|de)\s+temperatura\s+(?:tienes|hay)\b"
+)
+
 # Creating a new alert. The management cues are checked first, so the creation
 # words a deletion can contain ("deja de avisarme") never win.
 _CREATE_CUES = re.compile(
@@ -224,6 +238,8 @@ def classify_alert_operation(text: str) -> AlertOperation:
         return "DELETE_ALERT"
     if _SOFT_DELETE_CUES.search(folded) and not _TEMPERATURE_CUE.search(folded):
         return "DELETE_ALERT"
+    if _CAPABILITY_CUES.search(folded):
+        return "CAPABILITY_QUESTION"
     if _LIST_CUES.search(folded):
         return "LIST_ALERTS"
     if _CREATE_CUES.search(folded):

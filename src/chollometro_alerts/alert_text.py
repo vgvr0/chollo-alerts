@@ -331,6 +331,12 @@ _TEMPERATURE_RANGE_PATTERNS = (
 _TEMPERATURE_MIN_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        # The explicit word "temperatura" is enough context to omit the
+        # otherwise required unit: "temperatura mayor a 300".  Keep these
+        # patterns scoped to that word so prices, quantities and volumes are
+        # never reclassified as temperatures.
+        rf"\btemperatura\s*(?:es\s+)?(?:mayor(?:es)?\s+(?:que|a|de)|superior\s+a|>)[\s]*(?:los\s+)?({_TEMPERATURE_NUMBER})",
+        rf"\b(?:m[áa]s|mas)\s+de\s+({_TEMPERATURE_NUMBER})\s+de\s+temperatura\b",
         rf"\b(?:m[áa]s|mas)\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
         rf"\bal\s+menos\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
         rf"\bcomo\s+m[íi]nimo\s+(?:de\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
@@ -348,6 +354,8 @@ _TEMPERATURE_MIN_PATTERNS = tuple(
 _TEMPERATURE_MAX_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        rf"\btemperatura\s*(?:es\s+)?(?:menor(?:es)?\s+(?:que|a|de)|inferior\s+a|<)[\s]*(?:los\s+)?({_TEMPERATURE_NUMBER})",
+        rf"\b(?:menos|por debajo)\s+de\s+({_TEMPERATURE_NUMBER})\s+de\s+temperatura\b",
         rf"\bno\s+m[áa]s\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
         rf"\bmenos\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
         rf"\bpor\s+menos\s+de\s+(?:los\s+)?({_TEMPERATURE_NUMBER})\s*{_TEMPERATURE_UNIT}",
