@@ -27,7 +27,7 @@ def patch_runtime_dependencies(monkeypatch, tmp_path, telegram_settings):
     monkeypatch.setattr(cli, "build_feed_client", feed)
     monkeypatch.setattr(cli, "TelegramNotifier", notifier)
     monkeypatch.setattr(
-        "sys.argv", ["chollometro-alerts", "--db", str(tmp_path / "alerts.sqlite3")]
+        "sys.argv", ["chollo-alerts", "--db", str(tmp_path / "alerts.sqlite3")]
     )
     return repository, client, feed, notifier
 
@@ -41,7 +41,7 @@ def test_scan_cli_initializes_service_and_passes_it_to_scanner(monkeypatch, tmp_
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(tmp_path / "alerts.sqlite3"),
             "--pages",
@@ -84,7 +84,7 @@ def test_run_cli_keeps_service_controller_and_multiuser_wiring(monkeypatch, tmp_
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(tmp_path / "alerts.sqlite3"),
             "--pages",
@@ -130,7 +130,7 @@ def test_telegram_listen_does_not_initialize_scanner_components(monkeypatch, tmp
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(tmp_path / "alerts.sqlite3"),
             "telegram-listen",

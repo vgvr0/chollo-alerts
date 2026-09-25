@@ -104,7 +104,7 @@ def test_check_dry_run_prints_details_then_all_metrics(monkeypatch, tmp_path, ca
     monkeypatch.setattr(cli, "DealRepository", lambda path: service.repository)
     monkeypatch.setattr(cli, "AlertService", lambda *args: service)
     monkeypatch.setattr(cli, "load_rules", dict)
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "check", "--dry-run"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "check", "--dry-run"])
     cli.main()
     output = capsys.readouterr().out
     assert (
@@ -141,7 +141,7 @@ def test_empty_check_prints_zero_metrics(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "DealRepository", lambda path: service.repository)
     monkeypatch.setattr(cli, "AlertService", lambda *args: service)
     monkeypatch.setattr(cli, "load_rules", dict)
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "check", "--dry-run"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "check", "--dry-run"])
     cli.main()
     lines = capsys.readouterr().out.splitlines()
     # An empty-but-successful scan says so explicitly, next to its zero counters.

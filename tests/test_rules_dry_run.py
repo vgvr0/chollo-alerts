@@ -410,7 +410,7 @@ def test_run_rules_cli_reports_the_canonical_dry_run(monkeypatch, tmp_path, caps
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(tmp_path / "rules.sqlite3"),
             "run-rules",

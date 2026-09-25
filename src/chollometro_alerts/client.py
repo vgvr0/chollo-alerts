@@ -84,7 +84,7 @@ class ChollometroClient:
         # Injectable so tests exercise the retry policy without waiting.
         self._sleep = sleep or time.sleep
         self.session.headers.update(
-            {"User-Agent": "chollometro-alerts/0.1 (+https://www.chollometro.com)"}
+            {"User-Agent": "chollo-alerts/0.1 (+https://www.chollometro.com)"}
         )
         self.last_search = {}
         # Outcome of the last `recent()` batch: SUCCESS, PARTIAL or FAILED.

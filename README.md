@@ -1,4 +1,6 @@
-# 🛒 Chollometro Alerts
+# 🛒 Chollo Alerts
+
+> This is an independent open-source project and is not affiliated with or endorsed by Chollometro.
 
 Create deal alerts in natural language and receive matching Chollometro deals
 on Telegram.
@@ -9,15 +11,15 @@ calculations and deal decisions remain deterministic and reproducible; optional
 DeepSeek analysis is used only to extract structured facts when local parsing
 is not enough.
 
-[![GitHub Release](https://img.shields.io/github/v/release/vgvr0/chollometro-alerts?label=release&sort=semver)](https://github.com/vgvr0/chollometro-alerts/releases/tag/v1.0.0)
-[![CI](https://github.com/vgvr0/chollometro-alerts/actions/workflows/ci.yml/badge.svg)](https://github.com/vgvr0/chollometro-alerts/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/vgvr0/chollo-alerts?label=release&sort=semver)](https://github.com/vgvr0/chollo-alerts/releases/tag/v1.0.0)
+[![CI](https://github.com/vgvr0/chollo-alerts/actions/workflows/ci.yml/badge.svg)](https://github.com/vgvr0/chollo-alerts/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
-[![License: Apache-2.0](https://img.shields.io/github/license/vgvr0/chollometro-alerts)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/github/license/vgvr0/chollo-alerts)](LICENSE)
 
 <p align="center">
   <img
-    src="assets/chollometro-alerts-banner.png"
-    alt="Chollometro Alerts"
+    src="assets/chollo-alerts-banner.png"
+    alt="Chollo Alerts"
     width="100%"
   />
 </p>
@@ -50,8 +52,8 @@ Avísame de portátiles por menos de 700 € de Amazon pero no AliExpress
 Docker Compose is the recommended path for a local, continuously running setup.
 
 ```powershell
-git clone https://github.com/vgvr0/chollometro-alerts.git
-cd chollometro-alerts
+git clone https://github.com/vgvr0/chollo-alerts.git
+cd chollo-alerts
 Copy-Item .env.example .env
 ```
 
@@ -67,7 +69,7 @@ Start the listener and scanner:
 ```powershell
 docker compose up -d --build
 docker compose ps
-docker compose exec scanner chollometro-alerts health
+docker compose exec scanner chollo-alerts health
 ```
 
 The scanner may report `STARTING` until its first completed scan; it should then
@@ -321,7 +323,7 @@ ni ningún proveedor cloud.
    ```bash
    docker compose up -d --build
    docker compose ps
-   docker compose exec scanner chollometro-alerts health
+   docker compose exec scanner chollo-alerts health
    ```
 
    Deben aparecer los servicios `telegram` y `scanner`. El scanner debe
@@ -348,8 +350,8 @@ ni ningún proveedor cloud.
    volumen nombrado `chollometro-data`. No uses `docker compose down -v`
    salvo que quieras eliminar explícitamente los datos de SQLite.
 
-Compose reutiliza la misma imagen para `telegram` (`chollometro-alerts
-telegram-listen`) y `scanner` (`chollometro-alerts scan`). Ambos usan
+Compose reutiliza la misma imagen para `telegram` (`chollo-alerts
+telegram-listen`) y `scanner` (`chollo-alerts scan`). Ambos usan
 `DATABASE_PATH=/app/data/chollometro.sqlite3` y el volumen persistente
 `chollometro-data:/app/data`, por lo que listener y scanner leen exactamente la
 misma SQLite. Ambos se reinician con `restart: unless-stopped`; solo el scanner
@@ -372,7 +374,7 @@ por el backup elegido y vuelve a arrancar:
 docker compose stop
 # Sustituir la SQLite del volumen chollometro-data por el backup elegido
 docker compose start
-docker compose exec scanner chollometro-alerts health
+docker compose exec scanner chollo-alerts health
 ```
 
 Mantén de forma sencilla entre 7 y 14 backups y elimina los más antiguos sólo
@@ -389,7 +391,7 @@ Docker Desktop recuperará el contenedor y su daemon. Comprueba el resultado con
 
 La configuración cloud opcional describe un único Render **Background Worker**
 construido desde el `Dockerfile` de este repositorio. Ejecuta
-`chollometro-alerts run` como proceso principal y usa un disco persistente de
+`chollo-alerts run` como proceso principal y usa un disco persistente de
 Render de 1 GB montado en `/app/data`.
 
 SQLite is deliberately single-instance: `numInstances: 1` is required, and
@@ -429,7 +431,7 @@ Para ejecución local, usa exclusivamente la sección anterior. El equivalente
 de comprobación del scanner es:
 
 ```bash
-docker compose exec scanner chollometro-alerts health
+docker compose exec scanner chollo-alerts health
 ```
 
 Compose uses `restart: unless-stopped` locally. Render has no equivalent
@@ -447,7 +449,7 @@ not part of CI in this repository; `render.yaml` only describes the service.
 ## ▶️ Running the project
 
 Install it once, in a virtual environment of your choice (the package is a plain
-`setuptools` project that exposes the `chollometro-alerts` entry point):
+`setuptools` project that exposes the `chollo-alerts` entry point):
 
 ```bash
 python -m venv .venv
@@ -479,7 +481,7 @@ zone). Installing the project (`pip install -e .`) is enough.
 ### `check`: one-shot run
 
 ```bash
-chollometro-alerts check            # add --dry-run to skip Telegram
+chollo-alerts check            # add --dry-run to skip Telegram
 ```
 
 `check` is the legacy one-shot path: it performs a single HTML scan of the
@@ -491,8 +493,8 @@ requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 ### `run`: the daemon
 
 ```bash
-chollometro-alerts run                          # every SCAN_INTERVAL_MINUTES
-chollometro-alerts run --interval-minutes 5     # explicit interval
+chollo-alerts run                          # every SCAN_INTERVAL_MINUTES
+chollo-alerts run --interval-minutes 5     # explicit interval
 ```
 
 `run` keeps a process alive: it starts the Telegram listener (so alert rules can
@@ -505,9 +507,9 @@ Each cycle is the GraphQL feed + fallback described above.
 For Docker, the listener and scanner run as two processes sharing one SQLite:
 
 ```bash
-chollometro-alerts telegram-listen       # Telegram updates and alert changes
-chollometro-alerts scan                   # scanner/daemon only
-chollometro-alerts scan --interval-minutes 5
+chollo-alerts telegram-listen       # Telegram updates and alert changes
+chollo-alerts scan                   # scanner/daemon only
+chollo-alerts scan --interval-minutes 5
 ```
 
 `run` remains the all-in-one local daemon for backwards compatibility. The
@@ -553,7 +555,7 @@ operaciones de Telegram se filtran por el usuario estable `from.id`; el
 `chat.id` se conserva como destino de notificación. `username` y `first_name`
 son solo metadatos. Los usuarios desconocidos reciben un rechazo mientras
 `TELEGRAM_AUTO_REGISTER=false` (la política recomendada para una instalación
-cerrada). El comando administrativo `chollometro-alerts users` muestra el id,
+cerrada). El comando administrativo `chollo-alerts users` muestra el id,
 destino, estado y número de reglas sin exponer metadatos innecesarios.
 El modo multiusuario acepta únicamente updates cuyo `message.chat.type` sea
 `private`; grupos, supergrupos, canales y tipos desconocidos se rechazan antes
@@ -605,9 +607,9 @@ existentes.
 La limpieza se puede inspeccionar o ejecutar manualmente:
 
 ```powershell
-chollometro-alerts maintenance status
-chollometro-alerts maintenance prune --dry-run
-chollometro-alerts maintenance prune
+chollo-alerts maintenance status
+chollo-alerts maintenance prune --dry-run
+chollo-alerts maintenance prune
 ```
 
 `--dry-run` solo cuenta candidatos. `maintenance vacuum` ejecuta un `VACUUM`
@@ -950,8 +952,8 @@ the message is only the operator's reference), rewrites the `max_price` /
 `price_unit` columns, replaces the structured rule and keeps the product and
 brand that were already stored. After that, `alert test <id>` replays the
 corrected price semantics. The CLI equivalents for a *new* rule are
-`chollometro-alerts alert parse "<texto>"` and
-`chollometro-alerts alert add "<texto>"`.
+`chollo-alerts alert parse "<texto>"` and
+`chollo-alerts alert add "<texto>"`.
 
 The same sentence can carry the shops and the notification hours:
 
@@ -1049,8 +1051,8 @@ not an update: that is a deletion plus a creation.
 a rule can be validated without waiting for new deals:
 
 ```powershell
-chollometro-alerts alert test 12
-chollometro-alerts alert test 12 --limit 100
+chollo-alerts alert test 12
+chollo-alerts alert test 12 --limit 100
 ```
 
 Example output:

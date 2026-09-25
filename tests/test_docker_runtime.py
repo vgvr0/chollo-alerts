@@ -12,9 +12,9 @@ def test_compose_has_separate_listener_and_scanner_with_shared_storage():
     assert "telegram:" in compose
     assert "scanner:" in compose
     assert compose.count("<<: *app") == 2
-    assert "image: chollometro-alerts:runtime" in compose
-    assert '["chollometro-alerts", "telegram-listen"]' in compose
-    assert '["chollometro-alerts", "scan"]' in compose
+    assert "image: chollo-alerts:runtime" in compose
+    assert '["chollo-alerts", "telegram-listen"]' in compose
+    assert '["chollo-alerts", "scan"]' in compose
     assert "DATABASE_PATH: /app/data/chollometro.sqlite3" in compose
     assert "- chollometro-data:/app/data" in compose
     assert compose.count("- chollometro-data:/app/data") == 1
@@ -24,7 +24,7 @@ def test_compose_scanner_health_is_local_and_restart_is_enabled():
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 
     assert compose.count("restart: unless-stopped") == 1
-    assert 'test: ["CMD", "chollometro-alerts", "health"]' in compose
+    assert 'test: ["CMD", "chollo-alerts", "health"]' in compose
     assert "https://" not in compose
 
 

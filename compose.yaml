@@ -1,7 +1,7 @@
-name: chollometro-alerts
+name: chollo-alerts
 
 x-app: &app
-  image: chollometro-alerts:runtime
+  image: chollo-alerts:runtime
   build: .
   env_file:
     - path: .env
@@ -15,13 +15,13 @@ x-app: &app
 services:
   telegram:
     <<: *app
-    command: ["chollometro-alerts", "telegram-listen"]
+    command: ["chollo-alerts", "telegram-listen"]
 
   scanner:
     <<: *app
-    command: ["chollometro-alerts", "scan"]
+    command: ["chollo-alerts", "scan"]
     healthcheck:
-      test: ["CMD", "chollometro-alerts", "health"]
+      test: ["CMD", "chollo-alerts", "health"]
       interval: 60s
       timeout: 10s
       start_period: 60s

@@ -1,6 +1,6 @@
 services:
   - type: worker
-    name: chollometro-alerts
+    name: chollo-alerts
     runtime: docker
     plan: starter
     dockerfilePath: ./Dockerfile

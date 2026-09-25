@@ -379,7 +379,7 @@ def test_check_cli_signals_a_failed_scan(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "AlertService", lambda *args: service)
     monkeypatch.setattr(cli, "load_rules", dict)
     monkeypatch.setattr(
-        "sys.argv", ["chollometro-alerts", "--db", ":memory:", "check", "--dry-run"]
+        "sys.argv", ["chollo-alerts", "--db", ":memory:", "check", "--dry-run"]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -402,9 +402,7 @@ def test_baseline_cli_reports_a_failed_scan_without_writing_state(
     monkeypatch.setattr(cli, "ChollometroClient", lambda: client)
     monkeypatch.setattr(cli, "DealRepository", lambda path: repository)
     monkeypatch.setattr(cli, "AlertService", lambda *args: service)
-    monkeypatch.setattr(
-        "sys.argv", ["chollometro-alerts", "--db", ":memory:", "baseline"]
-    )
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "--db", ":memory:", "baseline"])
     # The first query succeeds and the second one fails: no baseline is written.
     client.session.responses.extend([Response(503)])
 
