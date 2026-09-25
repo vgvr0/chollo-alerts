@@ -14,9 +14,9 @@ import pytest
 from chollometro_alerts.alert_rule import AlertConstraints, AlertRule
 from chollometro_alerts.alert_text import (
     deterministic_price_alert,
-    extract_unit_price_mention,
     extract_merchant_mentions,
     extract_notification_window,
+    extract_unit_price_mention,
     merge_intent,
     merge_rule,
     vague_period,
@@ -45,7 +45,9 @@ COMPLETE = (
         ("leche por debajo de 0,8€ el litro", "0.8", "liter"),
         ("leche por debajo de 0.8 €/L", "0.8", "liter"),
         ("leche por debajo de 0,8 €/L", "0.8", "liter"),
+        ("leche por debajo de 0,80 €/L", "0.80", "liter"),
         ("leche a menos de 0.8 euros el litro", "0.8", "liter"),
+        ("leche a menos de 0.8 euros por litro", "0.8", "liter"),
         ("leche a menos de 80 céntimos el litro", "0.8", "liter"),
         ("leche a menos de 80 centimos por litro", "0.8", "liter"),
         ("leche por debajo de 80 ct/L", "0.8", "liter"),

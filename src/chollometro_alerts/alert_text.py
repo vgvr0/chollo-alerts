@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import cast
+from typing import Literal, cast
 
 from .alert_rule import AlertConstraints
 from .alert_rule import NotificationWindow as RuleNotificationWindow
@@ -40,7 +40,6 @@ from .schedule import (
     parse_time,
     validate_timezone,
 )
-
 
 # --- Conversational prices -------------------------------------------------- #
 #
@@ -64,7 +63,7 @@ class UnitPriceMention:
     """An explicit maximum price expressed per supported domain unit."""
 
     value: Decimal
-    unit: str
+    unit: Literal["liter", "kilogram", "unit"]
 
 
 def extract_unit_price_mention(text: str) -> UnitPriceMention | None:
@@ -88,6 +87,7 @@ def extract_unit_price_mention(text: str) -> UnitPriceMention | None:
     if currency.startswith(("cént", "cent", "ct")):
         value /= Decimal(100)
     unit = match.group("unit").casefold().rstrip(".")
+    dimension: Literal["liter", "kilogram", "unit"]
     if unit.startswith(("l", "litro")):
         dimension = "liter"
     elif unit in {"kg", "kilo", "kilos", "kilogramo", "kilogramos"}:
@@ -138,6 +138,7 @@ def deterministic_price_alert(text: str):
         ),
         text,
     )
+
 
 # Well-known shops of the Spanish market. The list only has to make the
 # unambiguous cases (`de Amazon`, `no Carrefour`) readable without the model;
