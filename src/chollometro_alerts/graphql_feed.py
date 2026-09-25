@@ -84,7 +84,7 @@ from .models import Deal
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://www.chollometro.com"
-USER_AGENT = "chollometro-alerts/0.1 (+https://www.chollometro.com)"
+USER_AGENT = "chollo-alerts/0.1 (+https://www.chollometro.com)"
 XSRF_COOKIE = "xsrf_t"
 SESSION_COOKIE = "pepper_session"
 

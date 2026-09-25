@@ -69,7 +69,7 @@ def run_alert_list(monkeypatch, capsys, path):
     monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "sys.argv",
-        ["chollometro-alerts", "--db", str(path), "alert", "list"],
+        ["chollo-alerts", "--db", str(path), "alert", "list"],
     )
     cli.main()
     return capsys.readouterr().out.strip().splitlines()

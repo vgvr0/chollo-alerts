@@ -53,7 +53,7 @@ The supported local container workflow is:
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=100
-docker compose exec scanner chollometro-alerts health
+docker compose exec scanner chollo-alerts health
 ```
 
 The Compose services share the named `chollometro-data` volume. Do not use

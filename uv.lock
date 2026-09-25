@@ -276,7 +276,7 @@ wheels = [
 ]
 
 [[package]]
-name = "chollometro-alerts"
+name = "chollo-alerts"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

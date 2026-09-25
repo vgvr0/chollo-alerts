@@ -25,7 +25,7 @@ HEADERS = {
     "Content-Type": "application/json",
     "Origin": BASE_URL,
     "Referer": f"{BASE_URL}/",
-    "User-Agent": "chollometro-alerts-gap-audit/1.0",
+    "User-Agent": "chollo-alerts-gap-audit/1.0",
 }
 
 

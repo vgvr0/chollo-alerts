@@ -604,7 +604,7 @@ def test_alert_test_cli_never_scrapes_never_calls_the_llm_or_telegram(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(repository.path),
             "alert",
@@ -630,7 +630,7 @@ def test_alert_test_cli_reports_an_unknown_rule(monkeypatch, tmp_path, capsys):
     repository = DealRepository(tmp_path / "replay.sqlite3")
     monkeypatch.setattr(cli, "load_dotenv", lambda *args: None)
     monkeypatch.setattr(cli, "DealRepository", lambda path: repository)
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "alert", "test", "12"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "alert", "test", "12"])
 
     with pytest.raises(SystemExit) as exit_info:
         cli.main()
@@ -663,7 +663,7 @@ def test_alert_test_does_not_touch_the_database(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         "sys.argv",
         [
-            "chollometro-alerts",
+            "chollo-alerts",
             "--db",
             str(repository.path),
             "alert",

@@ -37,7 +37,7 @@ def cli_env(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "ChollometroClient", lambda: client)
     notifier = Mock()
     monkeypatch.setattr(cli, "TelegramNotifier", notifier)
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "--db", ":memory:", "check"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "--db", ":memory:", "check"])
     return tmp_path, client, notifier
 
 
@@ -113,7 +113,7 @@ def test_missing_telegram_credentials_are_clear_cli_error(
 def test_dry_run_without_telegram_credentials(cli_env, monkeypatch, capsys):
     _, client, notifier = cli_env
     monkeypatch.setattr(
-        "sys.argv", ["chollometro-alerts", "--db", ":memory:", "check", "--dry-run"]
+        "sys.argv", ["chollo-alerts", "--db", ":memory:", "check", "--dry-run"]
     )
     cli.main()
     notifier.assert_not_called()
@@ -134,7 +134,7 @@ def test_cli_uses_database_path_environment_default(cli_env, monkeypatch):
         return repository
 
     monkeypatch.setattr(cli, "DealRepository", make_repository)
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "alert", "list"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "alert", "list"])
 
     cli.main()
 
@@ -159,9 +159,7 @@ def test_existing_environment_credentials_take_precedence(cli_env, monkeypatch, 
 
 def test_baseline_still_works_without_telegram_credentials(cli_env, monkeypatch):
     _, client, notifier = cli_env
-    monkeypatch.setattr(
-        "sys.argv", ["chollometro-alerts", "--db", ":memory:", "baseline"]
-    )
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "--db", ":memory:", "baseline"])
     cli.main()
     notifier.assert_not_called()
     client.recent.assert_called_once()
@@ -175,7 +173,7 @@ def test_telegram_poll_cli_wires_token_to_api_and_chat_id_to_authorization(
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "987654321")
     monkeypatch.setattr(
         "sys.argv",
-        ["chollometro-alerts", "--db", str(root / "rules.sqlite3"), "telegram-poll"],
+        ["chollo-alerts", "--db", str(root / "rules.sqlite3"), "telegram-poll"],
     )
     extractor = Mock()
     monkeypatch.setattr(cli, "DeepSeekProductExtractor", lambda: extractor)

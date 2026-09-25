@@ -86,7 +86,7 @@ class TelegramNotifier:
     def send_system_alert(self, error_type, component, message, run_id):
         from datetime import UTC, datetime
 
-        text = f"🚨 CHOLLOMETRO ALERTS ERROR\n\nTipo: {error_type}\nComponente: {component}\nMensaje: {message}\nHora: {datetime.now(UTC).isoformat()}\nRun: {run_id}"
+        text = f"🚨 CHOLLO ALERTS ERROR\n\nTipo: {error_type}\nComponente: {component}\nMensaje: {message}\nHora: {datetime.now(UTC).isoformat()}\nRun: {run_id}"
         post_with_retry(
             self.url, json={"chat_id": self.chat_id, "text": text}, timeout=self.timeout
         )

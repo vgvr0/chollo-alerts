@@ -90,7 +90,7 @@ def test_health_cli_exit_codes(tmp_path, monkeypatch):
     path = tmp_path / "health.sqlite3"
     repository = DealRepository(path)
     successful_scan(repository, utc_now())
-    monkeypatch.setattr("sys.argv", ["chollometro-alerts", "--db", str(path), "health"])
+    monkeypatch.setattr("sys.argv", ["chollo-alerts", "--db", str(path), "health"])
 
     with pytest.raises(SystemExit) as healthy:
         cli.main()

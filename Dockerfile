@@ -23,4 +23,4 @@ RUN uv sync --frozen --no-dev \
 
 USER appuser
 
-CMD ["chollometro-alerts", "run"]
+CMD ["chollo-alerts", "run"]
