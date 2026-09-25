@@ -282,6 +282,7 @@ class TelegramRuleController:
         service=None,
         multiuser_enabled=False,
         auto_register=False,
+        alert_nlp_mode="hybrid",
     ):
         self.url = f"https://api.telegram.org/bot{bot_token}"
         self.authorized_chat_id = str(authorized_chat_id)
@@ -293,6 +294,13 @@ class TelegramRuleController:
         self._sleep = sleep
         self.service = service
         self.multiuser_enabled = multiuser_enabled
+        if alert_nlp_mode not in {"deterministic", "hybrid", "llm_first"}:
+            raise ValueError(
+                "alert_nlp_mode debe ser deterministic, hybrid o llm_first"
+            )
+        self.alert_nlp_mode = alert_nlp_mode
+        self.last_interpretation_method = None
+        self.last_llm_success = None
         self.current_user_id = None
         self.current_chat_id = self.authorized_chat_id
         self.user_resolver = TelegramUserResolver(
@@ -388,22 +396,8 @@ class TelegramRuleController:
         return self._handle_create_or_unknown(text)
 
     def _handle_create_or_unknown(self, text):
-        """The creation path, unchanged: interpret the sentence, then store it."""
-        # A product plus an explicit unit-price condition is fully
-        # deterministic.  Keep this fast path ahead of DeepSeek so a clear
-        # Telegram request does not depend on provider availability.
-        intent = deterministic_price_alert(text)
-        if intent is None and self.translator is None:
-            raise ValueError(
-                "la creación de alertas desde Telegram requiere LLM_ENABLED=true "
-                "y DEEPSEEK_API_KEY"
-            )
-        # The merchant lists and the notification window are read from the
-        # sentence itself before anything is persisted: they must never be
-        # an invention of the model, and a vague period ("por la noche")
-        # asks for the exact hours instead of guessing them.
-        if intent is None:
-            intent = merge_intent(self.translator.interpret_alert(text), text)
+        """Interpret and persist a creation without changing the rule engine."""
+        intent = self._interpret_alert(text)
         if intent.action == "delete":
             # The provider recognized a deletion this router did not: which
             # alert disappears is still decided by the sentence, never by the
@@ -481,6 +475,69 @@ class TelegramRuleController:
         elif intent.action == "delete":
             self._clear_remembered()
         return self._format(intent, rows, baseline_count)
+
+    def _interpret_alert(self, text):
+        """Interpret an alert with validation and a safe deterministic fallback."""
+        deterministic = deterministic_price_alert(text)
+        if (
+            self.alert_nlp_mode in {"deterministic", "hybrid"}
+            and deterministic is not None
+        ):
+            self._record_interpretation("deterministic", llm_success=False)
+            return validate_intent(deterministic)
+        if self.alert_nlp_mode == "deterministic":
+            self._record_interpretation("deterministic", llm_success=False)
+            raise ValueError(
+                "No he podido identificar una alerta completa con el parser determinista"
+            )
+        if self.translator is not None:
+            try:
+                candidate = merge_intent(self.translator.interpret_alert(text), text)
+                # Management intents are structurally validated by Pydantic,
+                # but their product/reference requirements belong to the
+                # existing delete/update resolver below.
+                if candidate.action in {
+                    "delete",
+                    "update",
+                    "enable",
+                    "disable",
+                    "list",
+                }:
+                    self._record_interpretation("llm", llm_success=True)
+                    return candidate
+                validated = validate_intent(candidate)
+                self._record_interpretation("llm", llm_success=True)
+                return validated
+            except Exception as exc:
+                # A vague notification period is a domain clarification, not
+                # a provider failure; preserve the existing conversation flow.
+                if isinstance(exc, ValueError) and str(exc).startswith("«"):
+                    raise
+                logger.warning(
+                    "alert_interpretation nlp_mode=%s interpretation_method=fallback "
+                    "llm_success=false llm_failure=true error_type=%s",
+                    self.alert_nlp_mode,
+                    type(exc).__name__,
+                )
+        if deterministic is not None:
+            self._record_interpretation("fallback", llm_success=False)
+            return validate_intent(deterministic)
+        self._record_interpretation("fallback", llm_success=False)
+        raise ValueError(
+            "No he podido identificar una alerta completa; indica el producto y la condición"
+        )
+
+    def _record_interpretation(self, method, *, llm_success):
+        self.last_interpretation_method = method
+        self.last_llm_success = llm_success
+        logger.info(
+            "alert_interpretation nlp_mode=%s interpretation_method=%s "
+            "llm_success=%s llm_failure=%s",
+            self.alert_nlp_mode,
+            method,
+            str(llm_success).lower(),
+            str(method == "fallback").lower(),
+        )
 
     def _handle_list_alerts(self):
         """Show every stored alert and remember them as the last ones shown."""
