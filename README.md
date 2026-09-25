@@ -1244,3 +1244,4 @@ refusal to invent hours for a vague period.
   guidance.
 * See [SECURITY.md](SECURITY.md) for vulnerability reporting and responsible
   disclosure.
+* Independent project, not affiliated with Chollometro.
