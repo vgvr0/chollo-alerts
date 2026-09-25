@@ -1,14 +1,20 @@
 import sqlite3
 import threading
+from datetime import UTC, datetime, time
 from decimal import Decimal
 from typing import ClassVar
 
-from chollometro_alerts.alert_rule import AlertConstraints, AlertRule
+from chollometro_alerts.alert_rule import (
+    AlertConstraints,
+    AlertRule,
+    NotificationWindow,
+)
 from chollometro_alerts.models import Deal
 from chollometro_alerts.repository import (
     PENDING_TELEGRAM_FAILURE,
     DealRepository,
 )
+from chollometro_alerts.schedule import window_from_alert_rule
 from chollometro_alerts.service import AlertService, RunSummary
 from chollometro_alerts.telegram import TelegramNotifier
 from chollometro_alerts.telegram_rules import TelegramRuleController
@@ -358,6 +364,77 @@ def test_telegram_failure_for_one_user_does_not_affect_another(tmp_path):
     )
     assert repository.rule_observation_pending_reason(second_rule, deal.deal_id) is None
     assert repository.get_rule_observation(second_rule, deal.deal_id)[7] is not None
+
+
+def test_schedule_isolation_keeps_one_users_match_pending(tmp_path):
+    repository = DealRepository(tmp_path / "schedule-isolation.sqlite3")
+    first = repository.create_user(telegram_user_id="1", telegram_chat_id="chat-a")
+    second = repository.create_user(telegram_user_id="2", telegram_chat_id="chat-b")
+    first_rule = AlertRule(
+        query="leche",
+        product="leche",
+        constraints=AlertConstraints(max_price=Decimal(100)),
+        notification_window=NotificationWindow(
+            start=time(10), end=time(11), timezone="UTC"
+        ),
+    )
+    second_rule = AlertRule(
+        query="leche",
+        product="leche",
+        constraints=AlertConstraints(max_price=Decimal(100)),
+        notification_window=NotificationWindow(
+            start=time(0), end=time(23, 59), timezone="UTC"
+        ),
+    )
+    first_id = repository.save_alert_rule(first_rule, "leche", user_id=first.id)
+    second_id = repository.save_alert_rule(second_rule, "leche", user_id=second.id)
+
+    class Notifier:
+        dry_run = False
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, deal, evidence=None, rule_id=None):
+            self.sent.append(rule_id)
+
+        def send_system_alert(self, *args, **kwargs):
+            return None
+
+    notifier = Notifier()
+    service = AlertService(
+        client=None,
+        repository=repository,
+        notifier=notifier,
+        clock=lambda: datetime(2026, 9, 25, 12, tzinfo=UTC),
+    )
+    service.last_summary = RunSummary()
+    deal = Deal(
+        "shared",
+        "Leche",
+        "https://example.test/shared",
+        Decimal(1),
+        "shop",
+        1,
+        "milk",
+        None,
+    )
+    repository.claim_rule_observation(first_id, deal.deal_id)
+    repository.claim_rule_observation(second_id, deal.deal_id)
+
+    assert (
+        service._deliver(first_id, deal, window=window_from_alert_rule(first_rule)) == 0
+    )
+    assert (
+        service._deliver(second_id, deal, window=window_from_alert_rule(second_rule))
+        == 1
+    )
+    assert (
+        repository.rule_observation_pending_reason(first_id, deal.deal_id)
+        == "NOTIFICATION_SCHEDULE"
+    )
+    assert repository.get_rule_observation(second_id, deal.deal_id)[7] is not None
+    assert notifier.sent == [second_id]
 
 
 def test_legacy_migration_preserves_state_and_is_idempotent(monkeypatch, tmp_path):
