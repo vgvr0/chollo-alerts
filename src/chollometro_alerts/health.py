@@ -227,6 +227,9 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
 
 def check(path):
     repository = DealRepository(path)
-    report = evaluate(repository)
-    print(report.format())
-    return report.exit_code
+    try:
+        report = evaluate(repository)
+        print(report.format())
+        return report.exit_code
+    finally:
+        repository.close()
