@@ -170,6 +170,7 @@ class DealRepository:
         # deal rules use NULL query, so old NOT NULL tables are rebuilt while
         # copying every legacy row unchanged.
         columns = {row[1] for row in db.execute("PRAGMA table_info(alert_rules)")}
+        legacy_ownership_schema = "user_id" not in columns
         query_not_null = next(
             row[3]
             for row in db.execute("PRAGMA table_info(alert_rules)")
@@ -273,10 +274,12 @@ class DealRepository:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_error_alerts_last_seen_at ON error_alerts(last_seen_at)"
         )
-        self._migrate_alert_ownership(db)
+        self._migrate_alert_ownership(
+            db, legacy_ownership_schema=legacy_ownership_schema
+        )
         db.commit()
 
-    def _migrate_alert_ownership(self, db):
+    def _migrate_alert_ownership(self, db, *, legacy_ownership_schema=False):
         legacy_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or None
         legacy_user = os.getenv("TELEGRAM_USER_ID", "").strip() or None
         row = None
@@ -301,7 +304,7 @@ class DealRepository:
                     (legacy_user, legacy_chat, "legacy/default", now, now),
                 ).lastrowid,
             )
-        if row:
+        if row and legacy_ownership_schema:
             db.execute(
                 "UPDATE alert_rules SET user_id=? WHERE user_id IS NULL", (row[0],)
             )
