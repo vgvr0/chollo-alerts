@@ -36,6 +36,10 @@ class HealthReport:
     consecutive_failures: int = 0
     last_error_type: str | None = None
     reason: str | None = None
+    polling_mode: str = "NORMAL"
+    polling_interval_seconds: int | None = None
+    last_feed_window_ratio: float | None = None
+    feed_window_risk: bool = False
 
     @property
     def exit_code(self):
@@ -57,6 +61,20 @@ class HealthReport:
             ),
             f"CONSECUTIVE_FAILURES={self.consecutive_failures}",
             f"LAST_ERROR_TYPE={self.last_error_type or 'N/D'}",
+            f"POLLING_MODE={self.polling_mode}",
+            "POLLING_INTERVAL_SECONDS="
+            + (
+                str(self.polling_interval_seconds)
+                if self.polling_interval_seconds is not None
+                else "N/D"
+            ),
+            "LAST_FEED_WINDOW_RATIO="
+            + (
+                f"{self.last_feed_window_ratio:.3f}"
+                if self.last_feed_window_ratio is not None
+                else "N/D"
+            ),
+            f"FEED_WINDOW_RISK={str(self.feed_window_risk).lower()}",
         ]
         if self.reason:
             values.append(f"REASON={self.reason}")
@@ -84,6 +102,19 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
         )
 
     interval = interval_minutes or _minutes("SCAN_INTERVAL_MINUTES", 10)
+    feed_state = getattr(repository, "feed_state", lambda _key: None)
+    polling_mode = feed_state("adaptive_polling_mode") or "NORMAL"
+    raw_interval = feed_state("adaptive_polling_interval_seconds")
+    try:
+        polling_interval = int(raw_interval) if raw_interval else int(interval * 60)
+    except (TypeError, ValueError):
+        polling_interval = int(interval * 60)
+    raw_ratio = feed_state("adaptive_polling_last_ratio")
+    try:
+        ratio = float(raw_ratio) if raw_ratio else None
+    except (TypeError, ValueError):
+        ratio = None
+    feed_window_risk = feed_state("adaptive_polling_last_risk") == "1"
     stale_after = _minutes("HEALTH_STALE_AFTER_MINUTES", max(interval * 3, 15))
     startup_grace = _minutes("HEALTH_STARTUP_GRACE_MINUTES", max(interval * 2, 5))
     started = _parse(state.get("last_scan_started_at"))
@@ -112,6 +143,10 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
             failures,
             state.get("last_error_type"),
             "startup_grace",
+            polling_mode=polling_mode,
+            polling_interval_seconds=polling_interval,
+            last_feed_window_ratio=ratio,
+            feed_window_risk=feed_window_risk,
         )
     if completed is None and (
         finished is None or now - finished > timedelta(minutes=stale_after)
@@ -128,6 +163,10 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
             failures,
             state.get("last_error_type"),
             "scan_never_completed",
+            polling_mode=polling_mode,
+            polling_interval_seconds=polling_interval,
+            last_feed_window_ratio=ratio,
+            feed_window_risk=feed_window_risk,
         )
     if finished is None or now - finished > timedelta(minutes=stale_after):
         logger.error("health.unhealthy reason=scanner_stale")
@@ -142,6 +181,10 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
             failures,
             state.get("last_error_type"),
             "scanner_stale",
+            polling_mode=polling_mode,
+            polling_interval_seconds=polling_interval,
+            last_feed_window_ratio=ratio,
+            feed_window_risk=feed_window_risk,
         )
     if failures or telegram_failures:
         logger.warning(
@@ -160,6 +203,10 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
             failures,
             state.get("last_error_type"),
             "recent_errors",
+            polling_mode=polling_mode,
+            polling_interval_seconds=polling_interval,
+            last_feed_window_ratio=ratio,
+            feed_window_risk=feed_window_risk,
         )
     return HealthReport(
         HEALTHY,
@@ -171,6 +218,10 @@ def evaluate(repository: DealRepository, interval_minutes=None, now=None):
         age,
         failures,
         None,
+        polling_mode=polling_mode,
+        polling_interval_seconds=polling_interval,
+        last_feed_window_ratio=ratio,
+        feed_window_risk=feed_window_risk,
     )
 
 

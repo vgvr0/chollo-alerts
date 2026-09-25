@@ -35,6 +35,16 @@ It combines deterministic extraction with optional **LLM-powered analysis using 
 
 The daemon runs one discovery cycle every `SCAN_INTERVAL_MINUTES` (10 by default): a single GraphQL request, per-`threadId` deduplication, one evaluation per new deal and one Telegram message per accepted match.
 
+Adaptive GraphQL polling is an opt-in mitigation for high-velocity feed
+windows. With `ADAPTIVE_POLLING_ENABLED=true`, a mature window whose new-deal
+ratio reaches `ADAPTIVE_POLLING_TRIGGER_RATIO` (0.70 by default), or a real
+zero-overlap/watermark-gap signal, temporarily uses the shorter accelerated
+interval. It returns to the normal interval after the configured number of
+successful low-activity cycles. GraphQL errors, HTML fallback and partial gap
+recovery never count as "no new deals", so they preserve the existing error
+semantics and do not hide provider problems. The state machine is persisted in
+`feed_state` and does not create another scheduler.
+
 ```mermaid
 flowchart TD
     A["Chollometro"] --> B["Pepper GraphQL<br/>POST /graphql · root threads<br/>one request per cycle"]
@@ -186,6 +196,11 @@ start-up). The names and defaults below are the ones the code really uses
 | `CHOLLOMETRO_RETRY_BACKOFF_SECONDS` | `0.5` | Base of the exponential backoff. |
 | `CHOLLOMETRO_MAX_RETRY_BACKOFF_SECONDS` | `30` | Backoff cap. |
 | `SCAN_INTERVAL_MINUTES` | `10` | Delay between discovery cycles in `run` (overridden by `--interval-minutes`). |
+| `ADAPTIVE_POLLING_ENABLED` | `false` | Enables the opt-in NORMAL/ACCELERATED GraphQL polling cadence. |
+| `ADAPTIVE_POLLING_INTERVAL_SECONDS` | `120` | Accelerated interval; valid range `30..3600` and must be below the normal interval. |
+| `ADAPTIVE_POLLING_TRIGGER_RATIO` | `0.70` | New-thread ratio that activates acceleration. |
+| `ADAPTIVE_POLLING_RESET_RATIO` | `0.30` | Maximum ratio considered low activity for recovery to normal cadence. |
+| `ADAPTIVE_POLLING_COOLDOWN_CYCLES` | `3` | Successful low-activity cycles required to return to normal. |
 | `DATABASE_PATH` | `deals.sqlite3` locally; `/app/data/chollometro.sqlite3` in Compose | SQLite path. Compose mounts the host `./data` directory here. |
 | `HEALTH_STALE_AFTER_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 3, 15)` | Minutes without a finished scan before health becomes unhealthy. |
 | `HEALTH_STARTUP_GRACE_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 2, 5)` | Startup grace before a first completed scan is required. |
@@ -465,7 +480,7 @@ extracción.
 | `deals` | The deals already seen, keyed by `deal_id`, with `published_at`, `first_seen_at` and `notified_at`. |
 | `alert_rules` | The persisted alerts: `query`, `product_type`, `brand`, `max_price`, `price_unit`, `enabled`, `state`, `created_at`, `updated_at`. The structured rule (`structured_rule`) additionally carries the allowed/excluded shops and the notification window. |
 | `feed_threads` | **One row per thread ever seen in the GraphQL feed** (`thread_id` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
-| `feed_state` | Key/value state of the feed: `bootstrap_at` (the database saw its first discovery cycle) and `newest_published_at` (the watermark of the previous cycle). |
+| `feed_state` | Key/value state of the feed: `bootstrap_at`, `newest_published_at` and, when adaptive polling is enabled, the minimal persisted mode/counter/metric state. |
 | `rule_deal_observations` | One row per (`rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason, `notified_at`, the stored match evidence and `pending_reason` (`TELEGRAM_FAILURE` / `NOTIFICATION_SCHEDULE`) while the pair is still waiting for Telegram. |
 | `deal_rule_matches` | The accepted (`deal_id`, `rule_id`) pairs and when they were matched and notified. |
 | `product_extractions` | The extraction cache (one JSON payload per deal) that avoids repeated LLM calls. |
