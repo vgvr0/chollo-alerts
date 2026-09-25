@@ -22,12 +22,6 @@ def positive_interval(value):
 def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=None):
     interval_minutes = positive_interval(interval_minutes)
     stop_event = stop_event or threading.Event()
-    adaptive = AdaptivePollingController(
-        service.repository,
-        AdaptivePollingSettings.from_env(),
-        interval_minutes * 60,
-    )
-    service.adaptive_polling = adaptive
 
     def listen():
         try:
@@ -37,11 +31,35 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
 
     listener = threading.Thread(target=listen, name="telegram-listener", daemon=True)
     listener.start()
+    try:
+        run_scanner(
+            service,
+            interval_minutes=interval_minutes,
+            pages=pages,
+            stop_event=stop_event,
+        )
+    finally:
+        logger.info("daemon.stopping")
+        stop_event.set()
+        listener.join(timeout=2)
+        service.repository.close_current_thread()
+
+
+def run_scanner(service, interval_minutes=10, pages=1, stop_event=None):
+    """Run only the scanner loop, for deployments with a separate listener."""
+    interval_minutes = positive_interval(interval_minutes)
+    stop_event = stop_event or threading.Event()
+    adaptive = AdaptivePollingController(
+        service.repository,
+        AdaptivePollingSettings.from_env(),
+        interval_minutes * 60,
+    )
+    service.adaptive_polling = adaptive
     repository = service.repository
     retention = RetentionService(repository)
     repository.runtime_daemon_started()
     logger.info(
-        "daemon.started interval_minutes=%s polling_mode=%s polling_interval_seconds=%s",
+        "scanner.started interval_minutes=%s polling_mode=%s polling_interval_seconds=%s",
         interval_minutes,
         adaptive.mode,
         adaptive.interval_seconds,
@@ -61,8 +79,6 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                 )
                 service.run_active_rules(pages=pages)
                 adaptive.observe(service)
-                # A provider failure is recorded per scan and must never stop
-                # the loop: the next cycle simply tries again.
                 status = getattr(service, "last_scan_status", SCAN_SUCCESS)
                 repository.runtime_scan_finished(
                     run_id, status, getattr(service, "last_scan_error_type", None)
@@ -83,12 +99,9 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
             try:
                 retention.run_if_due()
             except Exception:
-                # Maintenance is disposable work and must never stop discovery.
                 logger.exception("retention.auto_failed")
             repository.runtime_heartbeat()
             stop_event.wait(adaptive.interval_seconds)
     finally:
-        logger.info("daemon.stopping")
-        stop_event.set()
-        listener.join(timeout=2)
-        service.repository.close_current_thread()
+        logger.info("scanner.stopping")
+        repository.close_current_thread()

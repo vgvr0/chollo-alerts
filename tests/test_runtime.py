@@ -6,7 +6,7 @@ import pytest
 
 from chollometro_alerts.intent import AlertIntent
 from chollometro_alerts.repository import DealRepository
-from chollometro_alerts.runtime import positive_interval
+from chollometro_alerts.runtime import positive_interval, run_scanner
 from chollometro_alerts.telegram_rules import TelegramRuleController
 
 
@@ -65,3 +65,59 @@ def test_user_facing_rule_messages_are_deterministic(tmp_path):
     assert "✅ Alerta actualizada: leche por debajo de 0,75 €/L" == controller._format(
         intent, []
     )
+
+
+def test_scanner_records_unexpected_scan_and_maintenance_failures(
+    monkeypatch, tmp_path
+):
+    repository = DealRepository(tmp_path / "scanner-errors.sqlite3")
+    service = Mock()
+    service.repository = repository
+    service.run_active_rules.side_effect = RuntimeError("scanner test failure")
+
+    class StopAfterOneWait:
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return self.waits > 0
+
+        def wait(self, _seconds):
+            self.waits += 1
+
+    def fail_maintenance(_self):
+        raise RuntimeError("maintenance test failure")
+
+    monkeypatch.setattr(
+        "chollometro_alerts.runtime.RetentionService.run_if_due", fail_maintenance
+    )
+    run_scanner(service, stop_event=StopAfterOneWait())
+
+    status = repository.runtime_status()
+    assert status["last_error_type"] == "RuntimeError"
+    repository.close_current_thread()
+
+
+def test_scanner_handles_failure_before_creating_a_scan_run(monkeypatch, tmp_path):
+    repository = DealRepository(tmp_path / "scanner-before-run.sqlite3")
+    service = Mock()
+    service.repository = repository
+    monkeypatch.setattr(
+        repository,
+        "list_alert_rules",
+        Mock(side_effect=RuntimeError("rules test failure")),
+    )
+
+    class StopAfterOneWait:
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return self.waits > 0
+
+        def wait(self, _seconds):
+            self.waits += 1
+
+    run_scanner(service, stop_event=StopAfterOneWait())
+    assert repository.runtime_status()["last_scan_run_id"] is None
+    repository.close_current_thread()

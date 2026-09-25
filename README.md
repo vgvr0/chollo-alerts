@@ -201,7 +201,7 @@ start-up). The names and defaults below are the ones the code really uses
 | `ADAPTIVE_POLLING_TRIGGER_RATIO` | `0.70` | New-thread ratio that activates acceleration. |
 | `ADAPTIVE_POLLING_RESET_RATIO` | `0.30` | Maximum ratio considered low activity for recovery to normal cadence. |
 | `ADAPTIVE_POLLING_COOLDOWN_CYCLES` | `3` | Successful low-activity cycles required to return to normal. |
-| `DATABASE_PATH` | `deals.sqlite3` locally; `/app/data/chollometro.sqlite3` in Compose | SQLite path. Compose mounts the host `./data` directory here. |
+| `DATABASE_PATH` | `chollometro.sqlite3` locally; `/app/data/chollometro.sqlite3` in Compose | SQLite path. Compose uses the shared `chollometro-data` volume here. |
 | `HEALTH_STALE_AFTER_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 3, 15)` | Minutes without a finished scan before health becomes unhealthy. |
 | `HEALTH_STARTUP_GRACE_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 2, 5)` | Startup grace before a first completed scan is required. |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
@@ -236,17 +236,17 @@ ni ningún proveedor cloud.
    Copy-Item .env.example .env
    ```
 
-2. Arranca el servicio:
+2. Arranca el runtime completo (listener Telegram y scanner separados):
 
    ```bash
-   docker compose up -d
+   docker compose up -d --build
    docker compose ps
-   docker compose exec chollometro-alerts chollometro-alerts health
+   docker compose exec scanner chollometro-alerts health
    ```
 
-   El servicio debe aparecer como `Up (healthy)` y el health debe devolver
-   `STATUS=HEALTHY` después del primer scan (durante el arranque puede indicar
-   `STARTING`).
+   Deben aparecer los servicios `telegram` y `scanner`. El scanner debe
+   aparecer como `Up (healthy)` y el health debe devolver `STATUS=HEALTHY`
+   después del primer scan (durante el arranque puede indicar `STARTING`).
 
 3. Consulta los logs:
 
@@ -264,14 +264,16 @@ ni ningún proveedor cloud.
    docker compose down
    ```
 
-   No uses `docker compose down -v`: la SQLite se conserva en `./data` y no
-   depende de un volumen Docker nombrado.
+   `docker compose down` detiene y elimina los contenedores, pero conserva el
+   volumen nombrado `chollometro-data`. No uses `docker compose down -v`
+   salvo que quieras eliminar explícitamente los datos de SQLite.
 
-La aplicación ejecuta `chollometro-alerts run` como usuario sin privilegios,
-con `restart: unless-stopped` y sin puertos publicados. La base de datos local
-está en `./data/chollometro.sqlite3` en el host y en
-`/app/data/chollometro.sqlite3` dentro del contenedor. El bind mount permite
-inspeccionarla, moverla y respaldarla fácilmente.
+Compose reutiliza la misma imagen para `telegram` (`chollometro-alerts
+telegram-listen`) y `scanner` (`chollometro-alerts scan`). Ambos usan
+`DATABASE_PATH=/app/data/chollometro.sqlite3` y el volumen persistente
+`chollometro-data:/app/data`, por lo que listener y scanner leen exactamente la
+misma SQLite. Ambos se reinician con `restart: unless-stopped`; solo el scanner
+declara un healthcheck local de progreso, sin tráfico externo adicional.
 
 ### Backup y restore
 
@@ -288,9 +290,9 @@ por el backup elegido y vuelve a arrancar:
 
 ```bash
 docker compose stop
-# Sustituir ./data/chollometro.sqlite3 por el backup elegido
+# Sustituir la SQLite del volumen chollometro-data por el backup elegido
 docker compose start
-docker compose exec chollometro-alerts chollometro-alerts health
+docker compose exec scanner chollometro-alerts health
 ```
 
 Mantén de forma sencilla entre 7 y 14 backups y elimina los más antiguos sólo
@@ -308,7 +310,7 @@ Docker Desktop recuperará el contenedor y su daemon. Comprueba el resultado con
 La configuración cloud opcional describe un único Render **Background Worker**
 construido desde el `Dockerfile` de este repositorio. Ejecuta
 `chollometro-alerts run` como proceso principal y usa un disco persistente de
-Render de 1 GB montado en `/data`.
+Render de 1 GB montado en `/app/data`.
 
 SQLite is deliberately single-instance: `numInstances: 1` is required, and
 multiple replicas or workers sharing this database are not supported. Render
@@ -320,7 +322,7 @@ filesystem is not.
 The durable database path is:
 
 ```text
-DATABASE_PATH=/data/chollometro.sqlite3
+DATABASE_PATH=/app/data/chollometro.sqlite3
 ```
 
 Set the three credentials in Render's Environment settings as secrets, without
@@ -341,18 +343,13 @@ project are `SCAN_INTERVAL_MINUTES`, `ALERT_TIMEZONE`,
 consumes `ALERT_TIMEZONE`.
 
 Create the Render service from the repository Blueprint, review the secret
-fields, and deploy. No public port is needed. The image contains a Docker
-`HEALTHCHECK` that executes `chollometro-alerts health`, but Render documents
-health checks only for web and private services, not background workers. Treat
-the Docker healthcheck as a local/container check, not as a Render worker
-restart signal; Render worker restart behavior is managed by the service and
-the process exit/SIGTERM lifecycle.
+fields, and deploy. No public port is needed. Render worker restart behavior is
+managed by the service and the process exit/SIGTERM lifecycle.
 Para ejecución local, usa exclusivamente la sección anterior. El equivalente
-histórico de Render es:
+de comprobación del scanner es:
 
 ```bash
-docker compose up --build
-docker compose run --rm chollometro-alerts chollometro-alerts health
+docker compose exec scanner chollometro-alerts health
 ```
 
 Compose uses `restart: unless-stopped` locally. Render has no equivalent
@@ -418,8 +415,22 @@ be created and edited from chat) in one thread and runs the discovery cycle
 every `interval_minutes * 60` seconds in the other, until it is interrupted.
 Each cycle is the GraphQL feed + fallback described above.
 
+### `telegram-listen` and `scan`: separated runtime
+
+For Docker, the listener and scanner run as two processes sharing one SQLite:
+
+```bash
+chollometro-alerts telegram-listen       # Telegram updates and alert changes
+chollometro-alerts scan                   # scanner/daemon only
+chollometro-alerts scan --interval-minutes 5
+```
+
+`run` remains the all-in-one local daemon for backwards compatibility. The
+local default database is `chollometro.sqlite3`; Compose explicitly overrides
+it to `/app/data/chollometro.sqlite3` inside its shared persistent volume.
+
 Other entry points: `baseline`, `run-rules --dry-run`, `alert parse|add|list|test`,
-`telegram-poll`, `telegram-listen` and `test-llm "<text>"`.
+`telegram-poll` and `test-llm "<text>"`.
 
 The last cycle is also readable programmatically, without a second metrics
 store: `AlertService.status_snapshot()` returns `last_scan` (when the last

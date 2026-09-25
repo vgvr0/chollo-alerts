@@ -35,7 +35,7 @@ from .replay import (
 )
 from .repository import DealRepository
 from .retention import RetentionService
-from .runtime import positive_interval, run_daemon
+from .runtime import positive_interval, run_daemon, run_scanner
 from .service import AlertService
 from .telegram import DryRunNotifier, TelegramNotifier
 from .telegram_rules import TelegramRuleController, format_alert_list
@@ -240,6 +240,8 @@ def main():
     maintenance_sub.add_parser("vacuum", help="Compactar SQLite explícitamente")
     run_parser = sub.add_parser("run", help="Ejecutar listener y scanner continuamente")
     run_parser.add_argument("--interval-minutes", type=int, default=None)
+    scan_parser = sub.add_parser("scan", help="Ejecutar solo el scanner continuamente")
+    scan_parser.add_argument("--interval-minutes", type=int, default=None)
     rules_parser = sub.add_parser("run-rules", help="Evaluar reglas activas")
     rules_parser.add_argument("--dry-run", action="store_true", required=True)
     alert_parser = sub.add_parser("alert", help="Gestionar alertas en lenguaje natural")
@@ -413,7 +415,7 @@ def main():
         )
         controller.poll_once()
         return
-    if a.command in {"telegram-listen", "run"}:
+    if a.command in {"telegram-listen", "run", "scan"}:
         try:
             telegram = TelegramSettings.from_env()
         except ConfigurationError as exc:
@@ -438,15 +440,17 @@ def main():
                 ),
                 feed=build_feed_client(),
             )
-        controller = TelegramRuleController(
-            bot_token=telegram.bot_token,
-            authorized_chat_id=telegram.authorized_chat_id,
-            repository=repository,
-            translator=extractor,
-            service=service,
-            multiuser_enabled=telegram.multiuser_enabled,
-            auto_register=telegram.auto_register,
-        )
+        controller = None
+        if a.command != "scan":
+            controller = TelegramRuleController(
+                bot_token=telegram.bot_token,
+                authorized_chat_id=telegram.authorized_chat_id,
+                repository=repository,
+                translator=extractor,
+                service=service,
+                multiuser_enabled=telegram.multiuser_enabled,
+                auto_register=telegram.auto_register,
+            )
         stop = threading.Event()
         previous_handlers = {}
 
@@ -459,8 +463,16 @@ def main():
             for signum in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[signum] = signal.signal(signum, request_shutdown)
             if a.command == "telegram-listen":
+                assert controller is not None
                 controller.listen_forever(stop_event=stop)
+            elif a.command == "scan":
+                assert service is not None
+                interval = positive_interval(
+                    a.interval_minutes or os.getenv("SCAN_INTERVAL_MINUTES", "10")
+                )
+                run_scanner(service, interval, a.pages, stop)
             else:
+                assert controller is not None and service is not None
                 interval = positive_interval(
                     a.interval_minutes or os.getenv("SCAN_INTERVAL_MINUTES", "10")
                 )
