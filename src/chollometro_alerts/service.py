@@ -206,6 +206,8 @@ class AlertService:
         # cycle actually acts on (a saturated window alone means nothing).
         self.last_feed_overlap = None
         self.last_feed_window_full = False
+        self.last_feed_window_ratio = None
+        self.last_feed_risk_detected = False
         self.last_gap_recovery = {
             "status": GAP_NO_GAP,
             "pages": 0,
@@ -474,7 +476,7 @@ class AlertService:
         summary = getattr(self, "last_summary", None)
         if not isinstance(summary, RunSummary):
             summary = RunSummary()
-        return {
+        snapshot = {
             "last_scan": self.last_scan_at,
             "last_scan_status": self.last_scan_status,
             "last_error": self.last_scan_error_type,
@@ -484,6 +486,19 @@ class AlertService:
             "gap_recovery": dict(self.last_gap_recovery),
             "gap_recovery_metrics": dict(self.gap_recovery_metrics),
         }
+        adaptive = getattr(self, "adaptive_polling", None)
+        if adaptive is not None:
+            snapshot.update(adaptive.snapshot().as_dict())
+        else:
+            snapshot.update(
+                {
+                    "polling_mode": "NORMAL",
+                    "polling_interval_seconds": None,
+                    "last_feed_window_ratio": self.last_feed_window_ratio,
+                    "feed_window_risk": self.last_feed_risk_detected,
+                }
+            )
+        return snapshot
 
     def _run_rule_cycles(self, pages=1):
         """Scan only enabled persisted rules; comparisons remain deterministic."""
@@ -588,6 +603,8 @@ class AlertService:
         self.last_feed_oldest_age_seconds = None
         self.last_feed_overlap = None
         self.last_feed_window_full = False
+        self.last_feed_window_ratio = None
+        self.last_feed_risk_detected = False
         rules = self._active_rules_with_dates()
         if not rules:
             # Nothing can match, so the feed is not fetched at all.
@@ -1177,6 +1194,8 @@ class AlertService:
         self.last_feed_oldest_age_seconds = age
         self.last_feed_overlap = overlap
         self.last_feed_window_full = bool(batch.window_full)
+        expected = batch.expected_window
+        self.last_feed_window_ratio = min(1.0, new / expected) if expected > 0 else None
         logger.info(
             "feed_window received=%s new=%s window_limit=%s overlap=%s "
             "oldest_published_at=%s newest_published_at=%s oldest_age_seconds=%s "
@@ -1200,6 +1219,7 @@ class AlertService:
             )
         oldest = batch.oldest_published_at
         if oldest is not None and previous is not None and oldest > previous:
+            self.last_feed_risk_detected = True
             logger.warning(
                 "feed_window_gap previous_newest_published_at=%s "
                 "oldest_published_at=%s gap_seconds=%s",
@@ -1213,6 +1233,7 @@ class AlertService:
             and batch.received > 0
             and self.repository.feed_thread_count() > 0
         ):
+            self.last_feed_risk_detected = True
             logger.warning(
                 "feed_window_risk reason=no_overlap received=%s new=%s overlap=0 "
                 "window_limit=%s oldest_age_seconds=%s",

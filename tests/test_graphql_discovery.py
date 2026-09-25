@@ -678,6 +678,17 @@ class NoWaitEvent(threading.Event):
         return False
 
 
+class RecordingWaitEvent(NoWaitEvent):
+    def __init__(self):
+        super().__init__()
+        self.waits = []
+
+    def wait(self, timeout=None):
+        if timeout is not None:
+            self.waits.append(timeout)
+        return super().wait(timeout)
+
+
 class StubController:
     def __init__(self, repository):
         self.repository = repository
@@ -731,3 +742,34 @@ def test_the_daemon_runs_exactly_one_feed_fetch_per_cycle(tmp_path):
     assert service.scans == 3
     assert feed.calls == 3
     assert len(feed_scan_runs(repository)) == 3
+
+
+def test_adaptive_daemon_uses_fast_wait_after_feed_risk(monkeypatch, tmp_path):
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
+    monkeypatch.setenv("ADAPTIVE_POLLING_ENABLED", "true")
+    monkeypatch.setenv("ADAPTIVE_POLLING_INTERVAL_SECONDS", "120")
+    baseline = [historical("A")]
+    risky = [
+        make_deal(f"new-{index}", AFTER + timedelta(minutes=index))
+        for index in range(3)
+    ]
+    feed = FakeFeed(baseline, risky)
+    repository = DealRepository(tmp_path / "adaptive-daemon.db")
+    add_rule(repository)
+    stop = RecordingWaitEvent()
+    service = CyclingFeedService(
+        HtmlClient(),
+        repository,
+        RecordingNotifier(),
+        CountingExtractor(),
+        stop_event=stop,
+        cycles=2,
+        feed=feed,
+    )
+
+    run_daemon(
+        StubController(repository), service, interval_minutes=10, stop_event=stop
+    )
+
+    assert stop.waits[:2] == [600, 120]
+    assert service.status_snapshot()["polling_mode"] == "ACCELERATED"

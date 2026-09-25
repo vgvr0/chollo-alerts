@@ -1,6 +1,8 @@
 import logging
 import threading
 
+from .adaptive_polling import AdaptivePollingController
+from .config import AdaptivePollingSettings
 from .errors import SCAN_SUCCESS
 from .retention import RetentionService
 
@@ -20,6 +22,12 @@ def positive_interval(value):
 def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=None):
     interval_minutes = positive_interval(interval_minutes)
     stop_event = stop_event or threading.Event()
+    adaptive = AdaptivePollingController(
+        service.repository,
+        AdaptivePollingSettings.from_env(),
+        interval_minutes * 60,
+    )
+    service.adaptive_polling = adaptive
 
     def listen():
         try:
@@ -32,7 +40,12 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
     repository = service.repository
     retention = RetentionService(repository)
     repository.runtime_daemon_started()
-    logger.info("daemon.started interval_minutes=%s", interval_minutes)
+    logger.info(
+        "daemon.started interval_minutes=%s polling_mode=%s polling_interval_seconds=%s",
+        interval_minutes,
+        adaptive.mode,
+        adaptive.interval_seconds,
+    )
     try:
         while not stop_event.is_set():
             run_id = None
@@ -47,6 +60,7 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                     "scan_started run_id=%s active_rules=%s", run_id, len(rules)
                 )
                 service.run_active_rules(pages=pages)
+                adaptive.observe(service)
                 # A provider failure is recorded per scan and must never stop
                 # the loop: the next cycle simply tries again.
                 status = getattr(service, "last_scan_status", SCAN_SUCCESS)
@@ -72,7 +86,7 @@ def run_daemon(controller, service, interval_minutes=10, pages=1, stop_event=Non
                 # Maintenance is disposable work and must never stop discovery.
                 logger.exception("retention.auto_failed")
             repository.runtime_heartbeat()
-            stop_event.wait(interval_minutes * 60)
+            stop_event.wait(adaptive.interval_seconds)
     finally:
         logger.info("daemon.stopping")
         stop_event.set()

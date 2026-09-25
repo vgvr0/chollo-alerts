@@ -240,6 +240,56 @@ class RetentionSettings:
         )
 
 
+@dataclass(frozen=True)
+class AdaptivePollingSettings:
+    """Opt-in mitigation for high-velocity GraphQL feed windows."""
+
+    enabled: bool = False
+    interval_seconds: int = 120
+    trigger_ratio: float = 0.70
+    reset_ratio: float = 0.30
+    cooldown_cycles: int = 3
+
+    @classmethod
+    def from_env(cls):
+        load_project_dotenv()
+        raw = os.getenv("ADAPTIVE_POLLING_ENABLED", "false").strip().casefold()
+        if raw not in {"true", "false"}:
+            raise ConfigurationError("ADAPTIVE_POLLING_ENABLED debe ser true o false")
+        try:
+            interval = int(os.getenv("ADAPTIVE_POLLING_INTERVAL_SECONDS", "120"))
+            cooldown = int(os.getenv("ADAPTIVE_POLLING_COOLDOWN_CYCLES", "3"))
+            trigger = float(os.getenv("ADAPTIVE_POLLING_TRIGGER_RATIO", "0.70"))
+            reset = float(os.getenv("ADAPTIVE_POLLING_RESET_RATIO", "0.30"))
+        except ValueError as exc:
+            raise ConfigurationError(
+                "Configuración de adaptive polling inválida"
+            ) from exc
+        if not 30 <= interval <= 3600:
+            raise ConfigurationError(
+                "ADAPTIVE_POLLING_INTERVAL_SECONDS debe estar entre 30 y 3600"
+            )
+        if not 0 < trigger <= 1:
+            raise ConfigurationError(
+                "ADAPTIVE_POLLING_TRIGGER_RATIO debe estar entre 0 y 1"
+            )
+        if not 0 <= reset < trigger:
+            raise ConfigurationError(
+                "ADAPTIVE_POLLING_RESET_RATIO debe ser >= 0 y menor que trigger"
+            )
+        if not 1 <= cooldown <= 100:
+            raise ConfigurationError(
+                "ADAPTIVE_POLLING_COOLDOWN_CYCLES debe estar entre 1 y 100"
+            )
+        return cls(raw == "true", interval, trigger, reset, cooldown)
+
+    def validate_against(self, normal_interval_seconds):
+        if normal_interval_seconds <= self.interval_seconds:
+            raise ConfigurationError(
+                "ADAPTIVE_POLLING_INTERVAL_SECONDS debe ser menor que el intervalo normal"
+            )
+
+
 # Window behaviour of `threads(filter: {}, limit: N)`, measured against the live
 # endpoint (2026-09-23):
 #
