@@ -78,12 +78,11 @@ class TelegramUserResolver:
                     username="legacy/default",
                 )
             )
-        user = self.repository.user_for_telegram_id(identity.telegram_user_id)
+        user = self.repository.reconcile_telegram_identity(identity)
         if user is not None:
-            if not user[6]:
+            if not user.enabled:
                 return None
-            self.repository.update_user_metadata(user[0], identity)
-            return self.repository.user_for_id(user[0])
+            return user
         if not self.auto_register:
             return None
         return self.repository.create_user(

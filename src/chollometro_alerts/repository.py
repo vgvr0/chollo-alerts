@@ -418,8 +418,9 @@ class DealRepository:
 
     def update_user_metadata(self, user_id, identity):
         self.db.execute(
-            "UPDATE users SET telegram_chat_id=?,username=?,first_name=?,updated_at=? WHERE id=?",
+            "UPDATE users SET telegram_user_id=?,telegram_chat_id=?,username=?,first_name=?,updated_at=? WHERE id=?",
             (
+                identity.telegram_user_id,
                 identity.telegram_chat_id,
                 identity.username,
                 identity.first_name,
@@ -428,6 +429,71 @@ class DealRepository:
             ),
         )
         self.db.commit()
+
+    def reconcile_telegram_identity(self, identity):
+        """Return one user row for a Telegram identity, merging legacy rows.
+
+        A database upgraded from single-user mode can contain a legacy row
+        identified only by chat id.  Auto-registration must enrich that row,
+        not create a second user for the same private chat.  If an explicit
+        user-id row already exists, it is canonical and any legacy chat row is
+        merged into it.  This is deliberately an explicit identity-write
+        operation; read/list methods never repair ownership.
+        """
+        user_id = str(identity.telegram_user_id)
+        chat_id = str(identity.telegram_chat_id)
+        by_user = self.db.execute(
+            "SELECT id FROM users WHERE telegram_user_id=?", (user_id,)
+        ).fetchone()
+        by_chat = self.db.execute(
+            "SELECT id FROM users WHERE telegram_chat_id=? ORDER BY id LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        canonical_id = by_user[0] if by_user else (by_chat[0] if by_chat else None)
+
+        if canonical_id is None:
+            return None
+
+        if by_user and by_chat and by_user[0] != by_chat[0]:
+            legacy_id = by_chat[0]
+            # Preserve the canonical explicit user's rule identity.  A legacy
+            # duplicate rule is redundant; otherwise move its ownership.
+            legacy_rules = self.db.execute(
+                "SELECT id,query,product_type,brand,max_price,price_unit FROM alert_rules WHERE user_id=? OR user_id IS NULL",
+                (legacy_id,),
+            ).fetchall()
+            for rule_id, query, product, brand, maximum, unit in legacy_rules:
+                duplicate = self.db.execute(
+                    "SELECT id FROM alert_rules WHERE user_id=? AND query IS ? AND product_type IS ? AND brand IS ? AND max_price=? AND price_unit=?",
+                    (canonical_id, query, product, brand, maximum, unit),
+                ).fetchone()
+                if duplicate:
+                    self.db.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,))
+                else:
+                    self.db.execute(
+                        "UPDATE alert_rules SET user_id=? WHERE id=?",
+                        (canonical_id, rule_id),
+                    )
+            self.db.execute("DELETE FROM users WHERE id=?", (legacy_id,))
+        else:
+            self.db.execute(
+                "UPDATE alert_rules SET user_id=? WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE id=? AND username='legacy/default')",
+                (canonical_id, canonical_id),
+            )
+
+        self.db.execute(
+            "UPDATE users SET telegram_user_id=?,telegram_chat_id=?,username=?,first_name=?,updated_at=? WHERE id=?",
+            (
+                user_id,
+                chat_id,
+                identity.username,
+                identity.first_name,
+                datetime.now(UTC).isoformat(),
+                canonical_id,
+            ),
+        )
+        self.db.commit()
+        return self.user_for_id(canonical_id)
 
     def list_users(self):
         return self.db.execute(

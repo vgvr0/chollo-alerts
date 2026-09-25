@@ -442,6 +442,18 @@ class TelegramRuleController:
             }:
                 baseline_count = self.service.baseline_rule(rule[0], query)
                 rows = self.repository.list_alert_rules(user_id=self.current_user_id)
+        elif intent.action == "create" and self.service is None:
+            # Poll/listen mode may not have a scanner attached.  The rule is
+            # still a valid active alert; a later scan can evaluate it.  Keep
+            # INITIALIZING only for the service-backed baseline transaction,
+            # where existing deals must be excluded before activation.
+            query = intent.query or intent.product_type or intent.brand
+            rule = next((r for r in rows if r[1] == query), None)
+            if rule is not None:
+                self.repository.set_rule_state(
+                    rule[0], "ACTIVE", enabled=True, user_id=self.current_user_id
+                )
+                rows = self.repository.list_alert_rules(user_id=self.current_user_id)
         if intent.action == "list":
             self._remember_alerts([row[0] for row in rows])
         elif intent.action == "delete":

@@ -18,6 +18,7 @@ from chollometro_alerts.schedule import window_from_alert_rule
 from chollometro_alerts.service import AlertService, RunSummary
 from chollometro_alerts.telegram import TelegramNotifier
 from chollometro_alerts.telegram_rules import TelegramRuleController
+from chollometro_alerts.telegram_users import TelegramUserResolver
 
 
 def rule(query):
@@ -585,4 +586,135 @@ def test_two_users_can_write_same_sqlite_concurrently(tmp_path):
             "SELECT COUNT(*) FROM alert_rules WHERE query='leche'"
         ).fetchone()[0]
         == 2
+    )
+
+
+class _CreateTranslator:
+    def interpret_alert(self, _text):
+        from chollometro_alerts.intent import AlertIntent
+
+        return AlertIntent(
+            action="create",
+            query="deportivas",
+            product_type="deportivas",
+            max_price=500,
+            price_unit="absolute",
+        )
+
+
+def _multiuser_controller(repository, *, auto_register=True):
+    class Controller(TelegramRuleController):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.replies = []
+
+        def send_message(self, text):
+            self.replies.append(text)
+
+    return Controller(
+        bot_token="token",
+        authorized_chat_id="legacy-chat",
+        repository=repository,
+        translator=_CreateTranslator(),
+        multiuser_enabled=True,
+        auto_register=auto_register,
+    )
+
+
+def test_created_alert_is_immediately_visible_to_same_telegram_user(tmp_path):
+    repository = DealRepository(tmp_path / "immediate.sqlite3")
+    controller = _multiuser_controller(repository)
+    controller.process_update(typed_update(1, "42", "chat-42", "private", "crea"))
+    reply = controller.process_update(
+        typed_update(2, "42", "chat-42", "private", "qué alertas tengo")
+    )
+    assert "deportivas" in reply.casefold()
+    owner = repository.user_for_telegram_id("42")[0]
+    assert repository.list_alert_rules(user_id=owner)[0][6] == 1
+
+
+def test_create_and_list_resolve_same_owner(tmp_path):
+    repository = DealRepository(tmp_path / "same-owner.sqlite3")
+    controller = _multiuser_controller(repository)
+    controller.process_update(typed_update(1, "42", "chat-42", "private", "crea"))
+    owner = repository.db.execute("SELECT user_id FROM alert_rules").fetchone()[0]
+    controller.process_update(
+        typed_update(2, "42", "chat-42", "private", "qué alertas tengo")
+    )
+    assert owner == repository.user_for_telegram_id("42")[0]
+    assert len(repository.list_alert_rules(user_id=owner)) == 1
+
+
+def test_auto_registration_does_not_duplicate_legacy_user(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_USER_ID", raising=False)
+    repository = DealRepository(tmp_path / "legacy-reconcile.sqlite3")
+    legacy = repository.create_user(
+        telegram_chat_id="chat-42", username="legacy/default"
+    )
+    resolved = TelegramUserResolver(
+        repository, enabled=True, auto_register=True
+    ).resolve(typed_update(1, "42", "chat-42", "private", "lista"))
+    assert resolved.id == legacy.id
+    assert len(repository.list_users()) == 1
+    assert repository.user_for_telegram_id("42")[0] == legacy.id
+
+
+def test_repeated_updates_do_not_create_duplicate_user_identity(tmp_path):
+    repository = DealRepository(tmp_path / "repeat-identity.sqlite3")
+    resolver = TelegramUserResolver(repository, enabled=True, auto_register=True)
+    update_value = typed_update(1, "42", "chat-42", "private", "lista")
+    first = resolver.resolve(update_value)
+    second = resolver.resolve(update_value)
+    assert first.id == second.id
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM users WHERE telegram_user_id='42'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_new_alert_is_active_after_creation(tmp_path):
+    repository = DealRepository(tmp_path / "active-create.sqlite3")
+    controller = _multiuser_controller(repository)
+    controller.process_update(typed_update(1, "42", "chat-42", "private", "crea"))
+    assert repository.db.execute(
+        "SELECT enabled,state FROM alert_rules"
+    ).fetchone() == (1, "ACTIVE")
+
+
+def test_recreating_same_rule_for_same_user_is_idempotent(tmp_path):
+    repository = DealRepository(tmp_path / "idempotent.sqlite3")
+    controller = _multiuser_controller(repository)
+    controller.process_update(typed_update(1, "42", "chat-42", "private", "crea"))
+    controller.process_update(typed_update(2, "42", "chat-42", "private", "crea"))
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM alert_rules WHERE user_id=?",
+            (repository.user_for_telegram_id("42")[0],),
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_legacy_chat_id_and_auto_registered_identity_are_reconciled_correctly(
+    tmp_path,
+):
+    path = tmp_path / "restart-reconcile.sqlite3"
+    repository = DealRepository(path)
+    legacy = repository.create_user(
+        telegram_chat_id="chat-42", username="legacy/default"
+    )
+    repository.save_alert_rule(rule("legacy"), "legacy", user_id=None)
+    resolved = TelegramUserResolver(
+        repository, enabled=True, auto_register=True
+    ).resolve(typed_update(1, "42", "chat-42", "private", "lista"))
+    repository.close()
+    reopened = DealRepository(path)
+    assert resolved.id == legacy.id
+    assert reopened.user_for_telegram_id("42")[0] == legacy.id
+    assert (
+        reopened.db.execute("SELECT user_id FROM alert_rules").fetchone()[0]
+        == legacy.id
     )
