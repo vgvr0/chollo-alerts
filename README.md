@@ -6,6 +6,14 @@ The daemon discovers new deals through Chollometro's **internal GraphQL feed** (
 
 It combines deterministic extraction with optional **LLM-powered analysis using DeepSeek**, while keeping pricing calculations and deal decisions deterministic and reproducible.
 
+## 📚 Community and legal
+
+* Licensed under the [Apache License 2.0](LICENSE).
+* See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull request
+  guidance.
+* See [SECURITY.md](SECURITY.md) for vulnerability reporting and responsible
+  disclosure.
+
 ## ✨ Features
 
 * 🔎 **Automated deal monitoring** through the internal GraphQL feed (one request per cycle), with the public HTML searches kept as fallback
