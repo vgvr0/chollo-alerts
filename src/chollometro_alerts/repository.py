@@ -1029,6 +1029,17 @@ class DealRepository:
                     rows.append(row)
         return [self.deal_from_row(row) for row in rows]
 
+    def recent_deals(self, limit=5):
+        """Return the newest already-persisted deals, without provider calls."""
+        limit = min(max(int(limit), 1), 20)
+        rows = self.db.execute(
+            f"SELECT {DEAL_COLUMNS} FROM deals "
+            "ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END, "
+            "published_at DESC, first_seen_at DESC, deal_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self.deal_from_row(row) for row in rows]
+
     @staticmethod
     def deal_from_row(row):
         """Rebuild a `Deal` from the persisted columns (no scraping involved)."""

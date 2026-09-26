@@ -49,6 +49,12 @@ FEED_QUERY_LABEL = "graphql:feed"
 # one cycle into an unbounded loop.
 PENDING_NOTIFICATION_LIMIT = 50
 
+# Telegram's read-only recent-deals view has a deliberately small bounded
+# window. Keeping the bound in the service prevents other callers from
+# accidentally turning it into an unbounded database read.
+RECENT_DEALS_DEFAULT_LIMIT = 5
+RECENT_DEALS_MAX_LIMIT = 20
+
 # Only transient failures are retried by the feed client; this is the label the
 # operational alert uses when a GraphQL failure degraded the cycle.
 FEED_COMPONENT = "GraphQLFeedClient"
@@ -223,6 +229,11 @@ class AlertService:
             "gap_recovery_pages_total": 0,
             "gap_recovery_deals_total": 0,
         }
+
+    def recent_deals(self, limit=RECENT_DEALS_DEFAULT_LIMIT):
+        """Read the newest persisted deals without scraping, LLM or writes."""
+        bounded = min(max(int(limit), 1), RECENT_DEALS_MAX_LIMIT)
+        return self.repository.recent_deals(bounded)
 
     def run(self, queries, pages=1, rules=None):
         # Static/check mode is kept for compatibility; the daemon never enters

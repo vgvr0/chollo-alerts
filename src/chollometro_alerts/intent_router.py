@@ -39,6 +39,7 @@ AlertOperation = Literal[
     "DELETE_ALERT",
     "UPDATE_ALERT",
     "LIST_ALERTS",
+    "RECENT_DEALS",
     "CAPABILITY_QUESTION",
     "UNKNOWN",
 ]
@@ -201,6 +202,19 @@ _LIST_CUES = re.compile(
     r"|\balertas?\s+(?:activas|configuradas|guardadas|tengo|hay)\b"
 )
 
+# Asking for persisted deals is deliberately separate from listing alerts.
+# The optional number is parsed deterministically so this operation never
+# reaches the alert extractor (and therefore never reaches the LLM).
+_RECENT_DEALS_CUES = re.compile(
+    r"\b(?:ultimos?|recientes?)\s+(?:\d+\s+)?(?:chollos?|ofertas?|deals?)\b"
+    r"|\b(?:ultimos?|recientes?)\s+\d+\b"
+    r"|\b(?:chollos?|ofertas?|deals?)\s+(?:mas\s+)?recientes?\b"
+)
+_RECENT_DEALS_LIMIT = re.compile(
+    r"\b(?:ultimos?|recientes?)\s+(\d+)\b"
+    r"|\b(\d+)\s+(?:ultimos?|recientes?)\b"
+)
+
 # Informational capability questions must not be mistaken for a request to
 # list stored rules.  They describe what the bot can do, not what the user
 # currently has configured.
@@ -240,11 +254,22 @@ def classify_alert_operation(text: str) -> AlertOperation:
         return "DELETE_ALERT"
     if _CAPABILITY_CUES.search(folded):
         return "CAPABILITY_QUESTION"
+    if _RECENT_DEALS_CUES.search(folded):
+        return "RECENT_DEALS"
     if _LIST_CUES.search(folded):
         return "LIST_ALERTS"
     if _CREATE_CUES.search(folded):
         return "CREATE_ALERT"
     return "UNKNOWN"
+
+
+def recent_deal_limit(text: str, *, default: int = 5, maximum: int = 20) -> int:
+    """Read and bound the requested number of persisted recent deals."""
+    match = _RECENT_DEALS_LIMIT.search(fold(text))
+    requested = (
+        int(next(value for value in match.groups() if value)) if match else default
+    )
+    return min(max(requested, 1), maximum)
 
 
 def _asks_to_change(folded: str) -> bool:

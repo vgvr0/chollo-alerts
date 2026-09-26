@@ -1,7 +1,9 @@
 import logging
 import re
 import time
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -12,10 +14,12 @@ from .intent_router import (
     alert_candidates,
     classify_alert_operation,
     read_alert_reference,
+    recent_deal_limit,
     resolve_alert_reference,
     updated_rule,
 )
-from .models import format_number
+from .models import Deal, format_amount, format_number
+from .schedule import as_aware_utc, default_timezone
 from .telegram import post_with_retry
 from .telegram_users import TelegramUserResolver
 
@@ -267,6 +271,40 @@ def alert_detail_lines(intent) -> list[str]:
     return lines
 
 
+def _recent_deal_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        local = as_aware_utc(value).astimezone(ZoneInfo(default_timezone()))
+    except (TypeError, ValueError):
+        return None
+    return f"{local:%d/%m/%Y %H:%M}"
+
+
+def format_recent_deals(deals: list[Deal] | tuple[Deal, ...]) -> str:
+    """Render persisted deals compactly for a Telegram read-only response."""
+    if not deals:
+        return "No hay chollos persistidos todavía."
+    lines = ["🆕 Últimos chollos", ""]
+    for index, deal in enumerate(deals, start=1):
+        details = [deal.title]
+        if deal.price is not None:
+            details.append(format_amount(deal.price))
+        if deal.temperature is not None:
+            details.append(f"{deal.temperature}°")
+        if deal.merchant:
+            details.append(deal.merchant)
+        lines.append(f"{index}. " + " — ".join(details))
+        published = _recent_deal_datetime(deal.published_at)
+        if published is not None:
+            lines.append(f"🕒 {published}")
+        if deal.url:
+            lines.append(deal.url)
+        if index != len(deals):
+            lines.append("")
+    return "\n".join(lines)
+
+
 class TelegramRuleController:
     def __init__(
         self,
@@ -385,6 +423,8 @@ class TelegramRuleController:
                 "✅ Sí. Puedo crear alertas por temperatura de Chollometro, "
                 "por ejemplo: «Quiero alertas si la temperatura es mayor a 300»."
             )
+        if operation == "RECENT_DEALS":
+            return self._handle_recent_deals(text)
         if operation == "LIST_ALERTS":
             return self._handle_list_alerts()
         if operation == "DELETE_ALERT":
@@ -394,6 +434,20 @@ class TelegramRuleController:
         # CREATE_ALERT, and anything this router does not recognize, keep the
         # original path: the sentence is interpreted and merged as before.
         return self._handle_create_or_unknown(text)
+
+    def _handle_recent_deals(self, text):
+        """Read recent deals through the service, never through the router."""
+        limit = recent_deal_limit(text)
+        service = self.service
+        if service is None:
+            # Telegram poll/listen modes intentionally do not attach the scan
+            # service because alert creation must keep its old no-baseline
+            # behaviour. A read-only service instance still preserves the
+            # Telegram -> service -> repository boundary for this operation.
+            from .service import AlertService
+
+            service = AlertService(None, self.repository, None)
+        return format_recent_deals(service.recent_deals(limit))
 
     def _handle_create_or_unknown(self, text):
         """Interpret and persist a creation without changing the rule engine."""
