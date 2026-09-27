@@ -302,6 +302,9 @@ def main():
             if a.maintenance_command == "prune":
                 result = retention.run(dry_run=a.dry_run)
                 print(f"DRY_RUN={str(result.dry_run).lower()}")
+                print(f"RETENTION_DAYS={result.retention_days}")
+                print(f"CUTOFF={result.cutoff.isoformat() if result.cutoff else ''}")
+                print(f"DELETED_DEALS={result.deleted_deals}")
                 print(f"DELETED_SNAPSHOTS={result.deleted_snapshots}")
                 print(f"DELETED_CACHE_ENTRIES={result.deleted_cache_entries}")
                 print(f"DELETED_ERROR_HISTORY={result.deleted_error_history}")

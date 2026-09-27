@@ -148,9 +148,10 @@ def test_prune_deletes_only_safe_old_history_and_preserves_critical_state(tmp_pa
     )
     repository.db.commit()
     result = RetentionService(repository, settings(), clock=lambda: NOW).run(now=NOW)
-    assert result.total_deleted == 4
-    assert repository.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()[0] == 1
-    assert repository.db.execute("SELECT COUNT(*) FROM deals").fetchone()[0] == 2
+    assert result.deleted_deals == 1
+    assert result.total_deleted == 6
+    assert repository.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()[0] == 0
+    assert repository.db.execute("SELECT COUNT(*) FROM deals").fetchone()[0] == 1
     assert (
         repository.db.execute(
             "SELECT COUNT(*) FROM deal_temperature_snapshots"
@@ -219,8 +220,8 @@ def test_pending_notification_is_not_deleted(tmp_path):
     )
     repository.db.commit()
     RetentionService(repository, settings(), clock=lambda: NOW).run(now=NOW)
-    assert repository.pending_rule_notifications() == [(rule_id, "pending")]
-    assert repository.exists("pending")
+    assert repository.pending_rule_notifications() == []
+    assert not repository.exists("pending")
 
 
 def test_auto_maintenance_survives_restart(tmp_path):

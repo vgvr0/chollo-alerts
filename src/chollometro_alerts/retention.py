@@ -13,6 +13,15 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class RetentionResult:
     dry_run: bool
+    deleted_deals: int = 0
+    deleted_product_extractions: int = 0
+    deleted_matches: int = 0
+    deleted_observations: int = 0
+    deleted_feed_threads: int = 0
+    deleted_temperature_snapshots: int = 0
+    deleted_momentum_states: int = 0
+    cutoff: datetime | None = None
+    retention_days: int = 15
     deleted_snapshots: int = 0
     deleted_cache_entries: int = 0
     deleted_error_history: int = 0
@@ -28,6 +37,13 @@ class RetentionResult:
                 self.deleted_cache_entries,
                 self.deleted_error_history,
                 self.deleted_scan_runs,
+                self.deleted_deals,
+                self.deleted_product_extractions,
+                self.deleted_matches,
+                self.deleted_observations,
+                self.deleted_feed_threads,
+                self.deleted_temperature_snapshots,
+                self.deleted_momentum_states,
             )
         )
 
@@ -70,8 +86,11 @@ class RetentionService:
             if not dry_run:
                 self.repository.retention_finished(now, "SUCCESS")
             logger.info(
-                "retention.completed dry_run=%s deleted=%s snapshots=%s cache=%s errors=%s scan_runs=%s duration_seconds=%.3f",
+                "retention.completed dry_run=%s retention_days=%s cutoff=%s deleted_deals=%s deleted=%s snapshots=%s cache=%s errors=%s scan_runs=%s duration_seconds=%.3f",
                 dry_run,
+                result.retention_days,
+                result.cutoff.isoformat() if result.cutoff else None,
+                result.deleted_deals,
                 result.total_deleted,
                 result.deleted_snapshots,
                 result.deleted_cache_entries,
@@ -83,7 +102,13 @@ class RetentionService:
         except Exception as exc:
             if not dry_run:
                 self.repository.retention_finished(now, "FAILED", type(exc).__name__)
-            logger.exception("retention.failed error_type=%s", type(exc).__name__)
+            logger.exception(
+                "retention.failed retention_days=%s cutoff=%s duration_seconds=%.3f error_type=%s",
+                self.settings.deal_retention_days,
+                (now - timedelta(days=self.settings.deal_retention_days)).isoformat(),
+                time.monotonic() - started,
+                type(exc).__name__,
+            )
             raise
 
     def run_if_due(self, now=None):

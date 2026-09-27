@@ -298,6 +298,7 @@ start-up). The names and defaults below are the ones the code really uses
 | `HEALTH_STARTUP_GRACE_MINUTES` | `max(SCAN_INTERVAL_MINUTES * 2, 5)` | Startup grace before a first completed scan is required. |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
 | `RETENTION_ENABLED` | `true` | Enables the daily cleanup of disposable history. Set to `false` to disable it. |
+| `DEAL_RETENTION_DAYS` | `15` | Retains deals by provider `published_at`; deletes rows strictly older than the UTC cutoff, independent of site. |
 | `RETENTION_SNAPSHOTS_HOURS` | `24` | Temperature snapshot TTL. This preserves the 60-minute momentum window with margin. |
 | `RETENTION_LLM_CACHE_DAYS` | `30` | TTL for the persistent extraction cache, joined to the deal's `first_seen_at`. |
 | `RETENTION_ERROR_HISTORY_DAYS` | `90` | TTL for operational error history. |

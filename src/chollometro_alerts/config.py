@@ -168,6 +168,13 @@ def _non_negative_int(name, default):
     return value
 
 
+def _positive_int(name, default):
+    value = _non_negative_int(name, default)
+    if value <= 0:
+        raise ConfigurationError(f"{name} debe ser un entero positivo")
+    return value
+
+
 # Minutes between two operational alerts of the same kind (per error type and
 # component). Documented in `.env.example` since the beginning; read from the
 # environment here so the operator can actually change it.
@@ -267,6 +274,7 @@ class RetentionSettings:
     scan_history_days: int = 90
     batch_size: int = 500
     interval_hours: float = 24.0
+    deal_retention_days: int = 15
 
     @classmethod
     def from_env(cls):
@@ -291,6 +299,7 @@ class RetentionSettings:
             scan_history_days=_non_negative_int("RETENTION_SCAN_HISTORY_DAYS", 90),
             batch_size=max(1, _non_negative_int("RETENTION_BATCH_SIZE", 500)),
             interval_hours=_float("RETENTION_INTERVAL_HOURS", 24.0),
+            deal_retention_days=_positive_int("DEAL_RETENTION_DAYS", 15),
         )
 
 

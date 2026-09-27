@@ -794,6 +794,10 @@ class DealRepository:
         now = as_utc(now or datetime.now(UTC))
         cutoffs = self._retention_cutoffs(settings, now)
         return {
+            "deals": self._eligible_count(
+                "SELECT COUNT(*) FROM deals WHERE published_at IS NOT NULL AND published_at < ?",
+                (cutoffs["deals"],),
+            ),
             "snapshots": self._eligible_count(
                 "SELECT COUNT(*) FROM deal_temperature_snapshots WHERE observed_at < ?",
                 (cutoffs["snapshots"],),
@@ -821,6 +825,7 @@ class DealRepository:
     @staticmethod
     def _retention_cutoffs(settings, now):
         return {
+            "deals": (now - timedelta(days=settings.deal_retention_days)).isoformat(),
             "snapshots": (now - timedelta(hours=settings.snapshots_hours)).isoformat(),
             "cache": (now - timedelta(days=settings.llm_cache_days)).isoformat(),
             "errors": (now - timedelta(days=settings.error_history_days)).isoformat(),
@@ -834,6 +839,9 @@ class DealRepository:
             counts = self.retention_counts(settings, now=now)
             return RetentionResult(
                 dry_run=True,
+                deleted_deals=counts["deals"],
+                cutoff=as_utc(cutoffs["deals"]),
+                retention_days=settings.deal_retention_days,
                 deleted_snapshots=counts["snapshots"],
                 deleted_cache_entries=counts["cache_entries"],
                 deleted_error_history=counts["error_history"],
@@ -842,6 +850,9 @@ class DealRepository:
 
         total_batches = 0
         deleted = {}
+        deal_deleted = self._delete_expired_deals(cutoffs["deals"], settings.batch_size)
+        total_batches += int(deal_deleted["deals"] > 0)
+        deleted.update(deal_deleted)
         operations = (
             (
                 "snapshots",
@@ -879,12 +890,71 @@ class DealRepository:
             deleted[name] = count
         return RetentionResult(
             dry_run=False,
+            deleted_deals=deleted.get("deals", 0),
+            deleted_product_extractions=deleted.get("product_extractions", 0),
+            deleted_matches=deleted.get("matches", 0),
+            deleted_observations=deleted.get("observations", 0),
+            deleted_feed_threads=deleted.get("feed_threads", 0),
+            deleted_temperature_snapshots=deleted.get("temperature_snapshots", 0),
+            deleted_momentum_states=deleted.get("momentum_states", 0),
+            cutoff=as_utc(cutoffs["deals"]),
+            retention_days=settings.deal_retention_days,
             deleted_snapshots=deleted.get("snapshots", 0),
             deleted_cache_entries=deleted.get("cache_entries", 0),
             deleted_error_history=deleted.get("error_history", 0),
             deleted_scan_runs=deleted.get("scan_runs", 0),
             batches=total_batches,
         )
+
+    def _delete_expired_deals(self, cutoff, batch_size):
+        """Explicit application-level cascade for expired deal detail rows."""
+        deleted = {
+            name: 0
+            for name in (
+                "deals",
+                "product_extractions",
+                "matches",
+                "observations",
+                "feed_threads",
+                "temperature_snapshots",
+                "momentum_states",
+            )
+        }
+        related = (
+            ("product_extractions", "deal_id", "product_extractions"),
+            ("deal_rule_matches", "deal_id", "matches"),
+            ("rule_deal_observations", "deal_id", "observations"),
+            ("feed_threads", "thread_id", "feed_threads"),
+            ("deal_temperature_snapshots", "thread_id", "temperature_snapshots"),
+            ("temperature_momentum_state", "thread_id", "momentum_states"),
+        )
+        with self.db:
+            self.db.execute(
+                "CREATE TEMP TABLE _expired_deal_keys (site TEXT NOT NULL, deal_id TEXT NOT NULL, PRIMARY KEY(site, deal_id))"
+            )
+            try:
+                while True:
+                    self.db.execute("DELETE FROM _expired_deal_keys")
+                    self.db.execute(
+                        "INSERT INTO _expired_deal_keys(site, deal_id) SELECT site, deal_id FROM deals WHERE published_at IS NOT NULL AND published_at < ? LIMIT ?",
+                        (cutoff, batch_size),
+                    )
+                    if not self.db.execute(
+                        "SELECT 1 FROM _expired_deal_keys LIMIT 1"
+                    ).fetchone():
+                        break
+                    for table, key_column, result_name in related:
+                        cur = self.db.execute(
+                            f"DELETE FROM {table} WHERE rowid IN (SELECT t.rowid FROM {table} t JOIN _expired_deal_keys k ON t.site=k.site AND t.{key_column}=k.deal_id)"
+                        )
+                        deleted[result_name] += max(cur.rowcount, 0)
+                    cur = self.db.execute(
+                        "DELETE FROM deals WHERE rowid IN (SELECT d.rowid FROM deals d JOIN _expired_deal_keys k ON d.site=k.site AND d.deal_id=k.deal_id)"
+                    )
+                    deleted["deals"] += max(cur.rowcount, 0)
+            finally:
+                self.db.execute("DROP TABLE _expired_deal_keys")
+        return deleted
 
     def vacuum(self):
         """Explicit physical compaction; never part of automatic retention."""
