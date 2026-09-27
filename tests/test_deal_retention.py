@@ -107,8 +107,14 @@ def test_retention_cascades_dependencies(tmp_path):
         "product_extractions",
         "deal_rule_matches",
         "rule_deal_observations",
-        "feed_threads",
         "deal_temperature_snapshots",
         "temperature_momentum_state",
     ):
         assert repo.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert (
+        repo.db.execute(
+            "SELECT COUNT(*) FROM feed_threads WHERE site=? AND thread_id=?",
+            (site, "old"),
+        ).fetchone()[0]
+        == 1
+    )

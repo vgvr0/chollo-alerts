@@ -121,7 +121,10 @@ class RunSummary:
     interesting: int = 0
     rejected: int = 0
     new: int = 0
+    new_threads: int = 0
     already_known: int = 0
+    reactivations_detected: int = 0
+    reactivations_notified: int = 0
     telegram_sent: int = 0
     errors: int = 0
     deterministic_count: int = 0
@@ -657,14 +660,31 @@ class AlertService:
         batch = getattr(self.feed, "last_feed", None)
         if not self.repository.feed_is_initialized(site):
             return self._record_feed_baseline(deals, batch, rules)
-        seen = self.repository.seen_feed_thread_ids(
-            [deal.deal_id for deal in deals],
-            site=site,
-        )
-        new_deals = [deal for deal in deals if deal.deal_id not in seen]
+        classifications = self.repository.classify_feed_threads(deals, site=site)
+        seen = {
+            deal.deal_id for deal in deals if classifications.get(deal.deal_id) != "NEW"
+        }
+        new_deals = [
+            deal
+            for deal in deals
+            if classifications.get(deal.deal_id) != "KNOWN_UNCHANGED"
+        ]
+        for deal in deals:
+            if classifications.get(deal.deal_id) == "KNOWN_UNCHANGED":
+                self.repository.record_feed_threads([deal])
         self.last_feed_new = len(new_deals)
+        self.last_summary.new_threads += sum(
+            value == "NEW" for value in classifications.values()
+        )
         self.last_summary.already_known += len(deals) - len(new_deals)
-        self._log_feed_window(batch, new=len(new_deals), overlap=len(seen))
+        self.last_summary.reactivations_detected += sum(
+            value == "REACTIVATED" for value in classifications.values()
+        )
+        self._log_feed_window(
+            batch,
+            new=len(new_deals),
+            overlap=len(deals) - len(new_deals),
+        )
         recovered_deals = []
         previous_watermark = self.repository.feed_watermark(site)
         watermark_gap = bool(
@@ -694,6 +714,7 @@ class AlertService:
         if recovered_deals:
             self._observe_temperature_momentum(recovered_deals)
             new_deals = _ordered_deals(new_deals + recovered_deals)
+            classifications.update({deal.deal_id: "NEW" for deal in recovered_deals})
             self.last_feed_new = len(new_deals)
             self.last_summary.found += len(recovered_deals)
         discovered_deals = _unique_feed_deals(deals + recovered_deals)
@@ -701,7 +722,14 @@ class AlertService:
         initial_metrics = dict(getattr(extractor, "metrics", {}))
         sent = self._deliver_pending_notifications(rules)
         for deal in new_deals:
+            if classifications.get(deal.deal_id) == "REACTIVATED":
+                self.repository.reset_deal_lifecycle(deal.deal_id, deal.site)
+                sent_before = sent
+            else:
+                sent_before = sent
             sent += self._process_feed_deal(deal, rules, extractor, initial_metrics)
+            if classifications.get(deal.deal_id) == "REACTIVATED":
+                self.last_summary.reactivations_notified += int(sent > sent_before)
             # Registered as seen after the outcome of every rule is durable:
             # a crash here simply evaluates the thread again next cycle, and a
             # failed delivery is retried from its pending observation.
@@ -856,6 +884,7 @@ class AlertService:
         self.repository.mark_feed_initialized(site=site)
         # Every thread of the window is seen for the first time.
         self.last_feed_new = len(deals)
+        self.last_summary.new_threads = len(deals)
         # No history exists yet, so "no overlap" cannot mean anything here.
         self._log_feed_window(batch, new=len(deals), overlap=None, initialized=False)
         self.repository.set_feed_watermark(

@@ -51,9 +51,9 @@ class RetentionResult:
 class RetentionService:
     """Repository-facing maintenance coordinator.
 
-    Critical state is deliberately absent from this delete list. In particular,
-    feed_threads, deals, matches and observations are the durable deduplication
-    and retry history and therefore have no automatic TTL.
+    Critical thread identity is deliberately absent from this delete list.
+    Deal details and their rule state are disposable after the deal TTL, while
+    ``feed_threads`` remains the durable site-aware deduplication memory.
     """
 
     def __init__(self, repository, settings=None, clock=None):

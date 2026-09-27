@@ -357,7 +357,7 @@ start-up). The names and defaults below are the ones the code really uses
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
 | `RETENTION_ENABLED` | `true` | Enables the daily cleanup of disposable history. Set to `false` to disable it. |
 | `DEAL_RETENTION_DAYS` | `15` | Retains deals by provider `published_at`; deletes rows strictly older than the UTC cutoff, independent of site. |
-| `RETENTION_FEED_THREADS_DAYS` | `0` | Must remain `0`: feed deduplication state is not independently pruned. Expired deal cascades may remove its related rows. |
+| `RETENTION_FEED_THREADS_DAYS` | `0` | Must remain `0`: compact feed identity is retained indefinitely and is not independently pruned. |
 | `RETENTION_OBSERVATIONS_DAYS` | `0` | Must remain `0`: alert observations are not independently pruned. |
 | `RETENTION_SNAPSHOTS_HOURS` | `24` | Temperature snapshot TTL. This preserves the 60-minute momentum window with margin. |
 | `RETENTION_LLM_CACHE_DAYS` | `30` | TTL for the persistent extraction cache, joined to the deal's `first_seen_at`. |
@@ -766,7 +766,7 @@ de contenido y versión del extractor.
 | --- | --- |
 | `deals` | The deals already seen, keyed by `(site, deal_id)`, with `currency`, `published_at`, `first_seen_at` and `notified_at`. |
 | `alert_rules` | The persisted alerts: `query`, `product_type`, `brand`, `max_price`, `price_unit`, `enabled`, `state`, `created_at`, `updated_at`. The structured rule (`structured_rule`) additionally carries the allowed/excluded shops and the notification window. |
-| `feed_threads` | **One row per site/thread ever seen in the GraphQL feed** (`(site, thread_id)` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
+| `feed_threads` | **One compact row per site/thread ever seen in the GraphQL feed** (`(site, thread_id)` primary key). It retains first/last observation, provider activity state and reactivation count, even after the full deal expires. |
 | `feed_state` | Key/value state of the feed: `bootstrap_at`, `newest_published_at` and, when adaptive polling is enabled, the minimal persisted mode/counter/metric state. |
 | `rule_deal_observations` | One row per (`site`, `rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason, `notified_at`, the stored match evidence and `pending_reason` (`TELEGRAM_FAILURE` / `NOTIFICATION_SCHEDULE`) while the pair is still waiting for Telegram. |
 | `deal_rule_matches` | The accepted (`site`, `deal_id`, `rule_id`) pairs and when they were matched and notified. |
@@ -776,7 +776,8 @@ de contenido y versión del extractor.
 | `error_alerts` | The operational alerts sent, with their fingerprint and cooldown timestamps. |
 
 `feed_threads` is what makes "only new deals" true: a `threadId` present there is
-never evaluated again, whichever provider saw it first.
+not evaluated again when it merely reappears. A new lifecycle is opened only
+when the provider proves an inactive-to-active transition.
 
 ### Retención y mantenimiento
 
@@ -789,13 +790,17 @@ caché LLM, errores operativos y runs de escaneo completados según sus TTL.
 Las operaciones son acotadas por `RETENTION_BATCH_SIZE` y usan transacciones
 cortas.
 
-No se podan de forma independiente las reglas, el contexto de usuarios, las
-observaciones o el estado `feed_threads`; `RETENTION_FEED_THREADS_DAYS` y
-`RETENTION_OBSERVATIONS_DAYS` deben ser `0`. Sin embargo, cuando un deal expira,
-la limpieza elimina en cascada sus matches, observaciones, extracción y fila de
-`feed_threads` asociada. Así se evita el crecimiento indefinido de los detalles
-de deals sin permitir una poda temporal independiente del estado de deduplicación.
-Los valores por defecto son conservadores y la operación es idempotente.
+No se podan de forma independiente las reglas, el contexto de usuarios ni las
+identidades históricas. Al expirar un deal, la limpieza elimina en cascada su
+fila de `deals` y los datos dependientes de ese `(site, deal_id)` —extracción,
+matches, observaciones y estado de temperatura—, pero conserva la huella mínima
+de `feed_threads`. Una reaparición sin cambio de estado remoto no notifica de
+nuevo. Cuando el proveedor demuestra `inactivo → activo` (`isExpired=True →
+False`, o un estado equivalente), se crea una nueva vida del deal, se vuelven a
+evaluar las reglas activas y puede enviarse una nueva notificación. El proveedor
+GraphQL actual no ofrece `updated_at`; por eso no se infieren reactivaciones a
+partir de la mera presencia en el feed. Los valores por defecto son
+conservadores y la operación es idempotente.
 
 La limpieza se puede inspeccionar o ejecutar manualmente:
 
@@ -1356,12 +1361,12 @@ belongs in the configuration (and the parser), not in a silent guess.
 
 ### Retention and deduplication are coupled
 
-`feed_threads` is not independently time-pruned because it supports the
-"already seen" guarantee. When a deal is removed by the 15-day deal-retention
-cascade, however, its related feed row and derived state are removed too. This
-keeps detail tables bounded while making the retention trade-off explicit:
-re-discovery of an expired thread is possible after its deduplication row has
-been removed.
+The complete deal payload is retained for 15 days according to
+`deals.published_at < now - DEAL_RETENTION_DAYS`. The compact
+`feed_threads` identity is retained indefinitely for site-aware historical
+deduplication. This keeps a technical feed reappearance silent while allowing a
+provider-proven inactive-to-active transition to start a new lifecycle and
+re-enter rule matching.
 
 ## 📈 Temperature momentum
 

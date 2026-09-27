@@ -123,7 +123,16 @@ class CountingExtractor:
         return extract_product(product_text)
 
 
-def make_deal(deal_id, published_at, price="10.00", title=None):
+def make_deal(
+    deal_id,
+    published_at,
+    price="10.00",
+    title=None,
+    *,
+    status=None,
+    is_expired=None,
+    site="chollometro",
+):
     return Deal(
         deal_id,
         title or f"Producto {deal_id}",
@@ -134,6 +143,9 @@ def make_deal(deal_id, published_at, price="10.00", title=None):
         "generic",
         published_at,
         product_text=title or f"Producto {deal_id}",
+        status=status,
+        is_expired=is_expired,
+        site=site,
     )
 
 

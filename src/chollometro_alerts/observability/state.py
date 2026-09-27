@@ -57,6 +57,26 @@ class ObservabilityState:
             "Notifications successfully sent.",
             registry=self.registry,
         )
+        self.threads_new = Counter(
+            "chollometro_threads_new",
+            "Previously unseen feed thread identities.",
+            registry=self.registry,
+        )
+        self.threads_known_ignored = Counter(
+            "chollometro_threads_known_ignored",
+            "Known feed threads ignored because no new activity was proven.",
+            registry=self.registry,
+        )
+        self.threads_reactivated = Counter(
+            "chollometro_threads_reactivated",
+            "Feed threads reactivated by an explicit provider state transition.",
+            registry=self.registry,
+        )
+        self.reactivations_notified = Counter(
+            "chollometro_reactivations_notified",
+            "Reactivated threads that produced at least one notification.",
+            registry=self.registry,
+        )
         self.notification_failures = Counter(
             "chollometro_notification_failures",
             "Notification delivery failures.",
@@ -192,6 +212,12 @@ class ObservabilityState:
             self.deals.inc(summary.found)
             self.matches.inc(summary.interesting)
             self.notifications.inc(summary.telegram_sent)
+            self.threads_new.inc(getattr(summary, "new_threads", 0))
+            self.threads_known_ignored.inc(getattr(summary, "already_known", 0))
+            self.threads_reactivated.inc(getattr(summary, "reactivations_detected", 0))
+            self.reactivations_notified.inc(
+                getattr(summary, "reactivations_notified", 0)
+            )
             self.notification_failures.inc(summary.errors)
             self.run_duration.observe(max(0.0, duration_seconds))
             self.alerts.set(self.active_alerts)

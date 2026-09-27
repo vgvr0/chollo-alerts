@@ -127,7 +127,7 @@ def test_failed_initialization_rolls_back_and_retry_migrates(tmp_path, monkeypat
 
     monkeypatch.setattr(repository, "_migrate_site_aware", original)
     reopened = DealRepository(path)
-    assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 3
     assert reopened.get_deal("legacy-1").site == "chollometro"
 
 
@@ -167,7 +167,7 @@ def test_old_database_is_backfilled_and_migration_is_idempotent(tmp_path):
     db.close()
 
     repository = DealRepository(path)
-    assert repository.db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repository.db.execute("PRAGMA user_version").fetchone()[0] == 3
     for table in (
         "deals",
         "product_extractions",

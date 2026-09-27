@@ -62,7 +62,7 @@ class _CompatConnection(sqlite3.Connection):
         return super().execute(sql, parameters)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_SITE = "chollometro"
 DEAL_COLUMNS = (
     "deal_id,title,url,price,merchant,temperature,category,published_at,site,currency"
@@ -320,8 +320,29 @@ class DealRepository:
         db.execute("""CREATE TABLE IF NOT EXISTS feed_threads (
             thread_id TEXT NOT NULL, published_at TEXT,
             first_seen_at TEXT NOT NULL, site TEXT NOT NULL DEFAULT 'chollometro',
+            last_seen_at TEXT, last_active_at TEXT, last_source_updated_at TEXT,
+            source_status TEXT, source_is_expired INTEGER,
+            reactivation_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (site, thread_id)
         )""")
+        feed_thread_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(feed_threads)")
+        }
+        for name, definition in (
+            ("last_seen_at", "TEXT"),
+            ("last_active_at", "TEXT"),
+            ("last_source_updated_at", "TEXT"),
+            ("source_status", "TEXT"),
+            ("source_is_expired", "INTEGER"),
+            ("reactivation_count", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in feed_thread_columns:
+                db.execute(f"ALTER TABLE feed_threads ADD COLUMN {name} {definition}")
+        db.execute(
+            "UPDATE feed_threads SET last_seen_at=COALESCE(last_seen_at, first_seen_at), "
+            "last_source_updated_at=COALESCE(last_source_updated_at, published_at), "
+            "reactivation_count=COALESCE(reactivation_count, 0)"
+        )
         db.execute("""CREATE TABLE IF NOT EXISTS feed_state (
             key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL,
             site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, key)
@@ -362,8 +383,13 @@ class DealRepository:
             thread_id TEXT NOT NULL, above_threshold INTEGER NOT NULL DEFAULT 0,
             site TEXT NOT NULL DEFAULT 'chollometro', updated_at TEXT NOT NULL,
             PRIMARY KEY (site, thread_id))""")
-        if current_schema < SCHEMA_VERSION:
+        if current_schema < 2:
             self._migrate_site_aware(db)
+        db.execute(
+            "UPDATE feed_threads SET last_seen_at=COALESCE(last_seen_at, first_seen_at), "
+            "last_source_updated_at=COALESCE(last_source_updated_at, published_at), "
+            "reactivation_count=COALESCE(reactivation_count, 0)"
+        )
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_thread_time ON deal_temperature_snapshots(thread_id, observed_at)"
         )
@@ -445,7 +471,10 @@ class DealRepository:
                     "feed_threads",
                     """CREATE TABLE feed_threads_new (
                     thread_id TEXT NOT NULL, published_at TEXT, first_seen_at TEXT NOT NULL,
-                    site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, thread_id))""",
+                    site TEXT NOT NULL DEFAULT 'chollometro', last_seen_at TEXT,
+                    last_active_at TEXT, last_source_updated_at TEXT, source_status TEXT,
+                    source_is_expired INTEGER, reactivation_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (site, thread_id))""",
                     "thread_id,published_at,first_seen_at",
                 ),
                 (
@@ -951,7 +980,6 @@ class DealRepository:
             ("product_extractions", "deal_id", "product_extractions"),
             ("deal_rule_matches", "deal_id", "matches"),
             ("rule_deal_observations", "deal_id", "observations"),
-            ("feed_threads", "thread_id", "feed_threads"),
             ("deal_temperature_snapshots", "thread_id", "temperature_snapshots"),
             ("temperature_momentum_state", "thread_id", "momentum_states"),
         )
@@ -1466,6 +1494,50 @@ class DealRepository:
             seen.update(row[0] for row in rows)
         return seen
 
+    @staticmethod
+    def _source_is_inactive(deal):
+        """Only explicit provider state can prove that a thread is inactive."""
+        if deal.is_expired is True:
+            return True
+        return str(deal.status or "").casefold() in {
+            "expired",
+            "deactivated",
+            "closed",
+            "deleted",
+            "inactive",
+        }
+
+    def classify_feed_threads(self, deals, site=None):
+        """Classify observations without changing historical source state.
+
+        A repeated active feed row is deliberately not enough for reactivation.
+        The Pepper API currently gives us `isExpired`/`status`, so only an
+        observed inactive -> active transition opens a new deal lifecycle.
+        """
+        classifications = {}
+        for deal in deals:
+            row = self.db.execute(
+                "SELECT source_is_expired, source_status FROM feed_threads "
+                "WHERE site=? AND thread_id=?",
+                (site or deal.site, str(deal.deal_id)),
+            ).fetchone()
+            if row is None:
+                classifications[deal.deal_id] = "NEW"
+                continue
+            was_inactive = bool(row[0]) or str(row[1] or "").casefold() in {
+                "expired",
+                "deactivated",
+                "closed",
+                "deleted",
+                "inactive",
+            }
+            classifications[deal.deal_id] = (
+                "REACTIVATED"
+                if was_inactive and not self._source_is_inactive(deal)
+                else "KNOWN_UNCHANGED"
+            )
+        return classifications
+
     def feed_thread_count(self, site=DEFAULT_SITE):
         """How many distinct threads the feed store already knows about.
 
@@ -1479,7 +1551,7 @@ class DealRepository:
         return row[0] if row else 0
 
     def record_feed_threads(self, deals, *, at=None):
-        """Register feed threads as seen. Bulk, idempotent, never re-timestamps."""
+        """Register an observation while retaining the site-aware identity."""
         now = as_utc(at or datetime.now(UTC)).isoformat()
         rows = [
             (
@@ -1487,6 +1559,11 @@ class DealRepository:
                 deal.published_at.isoformat() if deal.published_at else None,
                 now,
                 deal.site,
+                now if not self._source_is_inactive(deal) else None,
+                now if not self._source_is_inactive(deal) else None,
+                deal.published_at.isoformat() if deal.published_at else None,
+                deal.status,
+                None if deal.is_expired is None else int(deal.is_expired),
             )
             for deal in deals
             if deal.deal_id
@@ -1494,12 +1571,43 @@ class DealRepository:
         if not rows:
             return 0
         cur = self.db.executemany(
-            """INSERT OR IGNORE INTO feed_threads
-            (thread_id,published_at,first_seen_at,site) VALUES (?,?,?,?)""",
+            """INSERT INTO feed_threads
+            (thread_id,published_at,first_seen_at,site,last_seen_at,last_active_at,
+             last_source_updated_at,source_status,source_is_expired)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(site,thread_id) DO UPDATE SET
+              published_at=COALESCE(excluded.published_at,feed_threads.published_at),
+              last_seen_at=excluded.last_seen_at,
+              last_active_at=COALESCE(excluded.last_active_at,feed_threads.last_active_at),
+              last_source_updated_at=COALESCE(excluded.last_source_updated_at,feed_threads.last_source_updated_at),
+              source_status=excluded.source_status,
+              source_is_expired=excluded.source_is_expired,
+              reactivation_count=feed_threads.reactivation_count +
+                CASE WHEN COALESCE(feed_threads.source_is_expired, 0)=1
+                  AND excluded.source_is_expired=0 THEN 1 ELSE 0 END""",
             rows,
         )
         self.db.commit()
         return cur.rowcount
+
+    def reset_deal_lifecycle(self, deal_id, site=DEFAULT_SITE):
+        """Remove disposable detail for an explicitly reactivated thread.
+
+        The durable thread identity is intentionally untouched. Rule matches
+        and observations belong to the previous lifecycle and must not
+        suppress evaluation of the new one.
+        """
+        with self.db:
+            for table in (
+                "product_extractions",
+                "deal_rule_matches",
+                "rule_deal_observations",
+                "deals",
+            ):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE site=? AND deal_id=?",
+                    (site, str(deal_id)),
+                )
 
     def feed_watermark(self, site=DEFAULT_SITE):
         """Newest `published_at` of the previous cycle, or None."""

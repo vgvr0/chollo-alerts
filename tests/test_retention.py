@@ -149,8 +149,8 @@ def test_prune_deletes_only_safe_old_history_and_preserves_critical_state(tmp_pa
     repository.db.commit()
     result = RetentionService(repository, settings(), clock=lambda: NOW).run(now=NOW)
     assert result.deleted_deals == 1
-    assert result.total_deleted == 6
-    assert repository.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()[0] == 0
+    assert result.total_deleted == 5
+    assert repository.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()[0] == 1
     assert repository.db.execute("SELECT COUNT(*) FROM deals").fetchone()[0] == 1
     assert (
         repository.db.execute(
