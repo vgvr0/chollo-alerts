@@ -34,6 +34,7 @@ chollo-alerts = "chollometro_alerts.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+markers = ["live: opt-in network contract checks"]
 
 [tool.coverage.run]
 source = ["src/chollometro_alerts"]

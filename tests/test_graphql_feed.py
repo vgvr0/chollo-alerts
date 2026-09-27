@@ -190,6 +190,7 @@ def test_an_explicit_window_up_to_twenty_is_sent_as_a_limit_variable():
     assert request["body"]["operationName"] == "RecentThreadsWithLimit"
     assert request["body"]["variables"] == {"limit": 5}
     assert client.last_feed.window_limit == 5
+    assert "query RecentThreadsWithLimit($limit: Int)" in request["body"]["query"]
 
 
 def test_an_explicit_window_above_the_server_cap_is_never_sent():

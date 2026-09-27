@@ -1,0 +1,23 @@
+{
+  "data": {
+    "threads": [
+      {
+        "threadId": "1194015",
+        "title": "Funda NS2 Zelda 40 Aniversario",
+        "url": "https://www.promodescuentos.com/ofertas/funda-ns2-zelda-40-aniversario-1194015",
+        "temperature": 84.75,
+        "publishedAt": 1790511828,
+        "price": 999,
+        "nextBestPrice": null,
+        "status": "Activated",
+        "isExpired": false,
+        "descriptionPurified": "Disponible en tienda en línea.",
+        "commentCount": 7,
+        "merchant": {"merchantId": "8", "merchantName": "El Palacio de Hierro", "merchantUrlName": "palaciodehierro"},
+        "mainImage": {"name": "1194015_1", "path": "threads/raw/lJcKL"},
+        "user": {"userId": "763417", "username": "usuario"},
+        "groups": [{"threadGroupId": "18", "threadGroupName": "Videojuegos", "threadGroupUrlName": "videojuegos"}]
+      }
+    ]
+  }
+}

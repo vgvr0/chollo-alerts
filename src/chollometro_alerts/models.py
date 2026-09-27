@@ -49,6 +49,10 @@ class Deal:
     # Structured GraphQL groups.  The legacy `category` field remains intact
     # for HTML/old rules; new category rules use these stable provider facts.
     categories: tuple[CategoryRef, ...] = ()
+    # Provider identity and money metadata are additive.  Existing callers and
+    # persisted Chollometro rows remain valid because both fields are optional.
+    site: str = "chollometro"
+    currency: str = "EUR"
 
 
 def format_amount(value: Decimal | int | None) -> str:

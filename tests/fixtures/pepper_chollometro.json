@@ -1,0 +1,23 @@
+{
+  "data": {
+    "threads": [
+      {
+        "threadId": "2012039",
+        "title": "Vuelos de ida y vuelta",
+        "url": "https://www.chollometro.com/ofertas/vuelos-de-ida-y-vuelta-2012039",
+        "temperature": 165.91,
+        "publishedAt": 1790112449,
+        "price": 412.0,
+        "nextBestPrice": 950.0,
+        "status": "Activated",
+        "isExpired": false,
+        "descriptionPurified": "Vuelos de ida y vuelta",
+        "commentCount": 3,
+        "merchant": {"merchantId": "7383", "merchantName": "Google Flights", "merchantUrlName": "google-flights"},
+        "mainImage": {"name": "2012039_1", "path": "threads/raw/n9obc"},
+        "user": {"userId": "42", "username": "viajero"},
+        "groups": [{"threadGroupId": "17", "threadGroupName": "Viajes y ocio", "threadGroupUrlName": "viajes-y-ocio"}]
+      }
+    ]
+  }
+}

@@ -80,11 +80,12 @@ from .errors import (
 )
 from .filters import category_for
 from .models import Deal
+from .pepper_config import CHOLLOMETRO, PepperSiteConfig
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://www.chollometro.com"
-USER_AGENT = "chollo-alerts/0.1 (+https://www.chollometro.com)"
+USER_AGENT = "chollo-alerts/0.1 (Pepper GraphQL provider)"
 XSRF_COOKIE = "xsrf_t"
 SESSION_COOKIE = "pepper_session"
 
@@ -94,9 +95,7 @@ STALE_SESSION_STATUS = frozenset({403, 419})
 
 # The site builds card images from `mainImage.path` + `mainImage.name`; the same
 # template is used by the image mark-up the API returns inside descriptions.
-IMAGE_URL_TEMPLATE = (
-    "https://static.chollometro.com/{path}/{name}/fs/895x577/qt/65/{name}.jpg"
-)
+IMAGE_URL_SUFFIX = "/{path}/{name}/fs/895x577/qt/65/{name}.jpg"
 
 # Only the fields the `Deal` model and the window metrics need. The selection
 # was validated field by field against the live schema (introspection is
@@ -135,9 +134,8 @@ def _feed_query(operation_name, arguments):
     selection = "\n".join(
         f"    {line}" if line.strip() else "" for line in _FEED_SELECTION.splitlines()
     )
-    return (
-        f"query {operation_name} {{\n  threads({arguments}) {{\n{selection}\n  }}\n}}"
-    )
+    variable = "($limit: Int)" if "$limit" in arguments else ""
+    return f"query {operation_name}{variable} {{\n  threads({arguments}) {{\n{selection}\n  }}\n}}"
 
 
 # Production default: `threads(filter: {})` with **no `limit` argument at all**.
@@ -151,6 +149,14 @@ FEED_OPERATION = "RecentThreads"
 # wanted per cycle. The client rejects anything above 20 instead of sending it.
 LIMITED_FEED_QUERY = _feed_query("RecentThreadsWithLimit", "filter: {}, limit: $limit")
 LIMITED_FEED_OPERATION = "RecentThreadsWithLimit"
+
+_DETAIL_QUERY = f"""
+query DealDetail($thread_id: ID!) {{
+  thread(threadId: {{eq: $thread_id}}) {{
+{chr(10).join(f"    {line}" if line.strip() else "" for line in _FEED_SELECTION.splitlines())}
+  }}
+}}
+""".strip()
 
 
 @dataclass(frozen=True)
@@ -229,17 +235,24 @@ def _published_at(value):
         return None
 
 
-def image_url(main_image) -> str | None:
+def image_url(main_image, site_config: PepperSiteConfig = CHOLLOMETRO) -> str | None:
     """Rebuild the card image URL from the API's `path`/`name` pair."""
     if not isinstance(main_image, dict):
         return None
     name, path = main_image.get("name"), main_image.get("path")
     if not name or not path:
         return None
-    return IMAGE_URL_TEMPLATE.format(path=str(path).strip("/"), name=name)
+    return (
+        f"{site_config.image_base_url}"
+        f"{IMAGE_URL_SUFFIX.format(path=str(path).strip('/'), name=name)}"
+    )
 
 
-def thread_to_deal(thread: dict, source_query: str = "") -> Deal | None:
+def thread_to_deal(
+    thread: dict,
+    source_query: str = "",
+    site_config: PepperSiteConfig = CHOLLOMETRO,
+) -> Deal | None:
     """Map one GraphQL thread to the provider-neutral `Deal` model.
 
     `threadId` is the deal identity, exactly the value the HTML parser reads
@@ -293,21 +306,24 @@ def thread_to_deal(thread: dict, source_query: str = "") -> Deal | None:
         product_text=product_text,
         description=description,
         original_price=_price(thread.get("nextBestPrice")),
-        image=image_url(thread.get("mainImage")),
+        image=image_url(thread.get("mainImage"), site_config),
         source_query=source_query,
         status=thread.get("status"),
         is_expired=thread.get("isExpired"),
         categories=category_refs,
+        site=site_config.name,
+        currency=site_config.currency,
     )
 
 
 class GraphQLFeedClient:
-    """Fetch the newest Chollometro threads through the internal GraphQL API."""
+    """Fetch newest Pepper threads while preserving the Chollometro API."""
 
     def __init__(
         self,
         session=None,
-        base_url=DEFAULT_BASE_URL,
+        base_url=None,
+        site_config: PepperSiteConfig | None = None,
         timeout=None,
         retries=None,
         settings=None,
@@ -319,9 +335,11 @@ class GraphQLFeedClient:
         self.feed_settings = feed_settings or GraphQLFeedSettings.from_env()
         self.settings = settings or ChollometroSettings.from_env()
         self.session = session or requests.Session()
-        self.base_url = base_url.rstrip("/")
+        self.site_config = site_config or CHOLLOMETRO
+        self.base_url = (base_url or self.site_config.base_url).rstrip("/")
         self.home_url = f"{self.base_url}/"
-        self.endpoint = f"{self.base_url}{self.feed_settings.path}"
+        path = self.site_config.graphql_path or self.feed_settings.path
+        self.endpoint = f"{self.base_url}{path}"
         self.window_limit = self.feed_settings.window_limit
         # Same HTTP policy as the HTML client: one timeout, bounded retries.
         self.timeout = self.settings.timeout if timeout is None else timeout
@@ -389,8 +407,7 @@ class GraphQLFeedClient:
             }
         return json.dumps(body)
 
-    @staticmethod
-    def _deals(threads):
+    def _deals(self, threads):
         """Map threads to deals, keeping the first occurrence of every thread id.
 
         The window is ordered newest-first, so the first occurrence is the one
@@ -400,12 +417,48 @@ class GraphQLFeedClient:
         deals = []
         seen = set()
         for thread in threads:
-            deal = thread_to_deal(thread)
+            deal = thread_to_deal(thread, site_config=self.site_config)
             if deal is None or deal.deal_id in seen:
                 continue
             seen.add(deal.deal_id)
             deals.append(deal)
         return tuple(deals)
+
+    def detail(self, deal_id):
+        """Fetch one Pepper thread by its site-local numeric identifier."""
+        payload = json.dumps(
+            {
+                "query": _DETAIL_QUERY,
+                "operationName": "DealDetail",
+                "variables": {"thread_id": str(deal_id)},
+            }
+        )
+        self._ensure_session()
+        response = self.session.post(
+            self.endpoint,
+            headers=self._headers(),
+            data=payload,
+            timeout=self.timeout,
+        )
+        status = getattr(response, "status_code", None)
+        if status is not None and status >= 400:
+            raise self._http_error(response, status, attempt=1)
+        try:
+            body = response.json()
+        except (TypeError, ValueError) as exc:
+            raise ChollometroParseError(
+                "Pepper GraphQL detail payload is not JSON",
+                status_code=status,
+                response=response,
+            ) from exc
+        if body.get("errors"):
+            raise ChollometroGraphQLError(
+                f"Chollometro GraphQL error: {self._first_message(body['errors'])}",
+                status_code=status,
+                response=response,
+            )
+        thread = (body.get("data") or {}).get("thread")
+        return thread_to_deal(thread, site_config=self.site_config)
 
     def _retry(self, attempt, error):
         """Retry only transient failures, never more than the configured budget."""
