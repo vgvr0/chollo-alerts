@@ -135,6 +135,8 @@ class RunSummary:
     llm_unique_deals: int = 0
     llm_failures: int = 0
     llm_tokens: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
     llm_duration_seconds: float = 0.0
     # Matches kept pending by an alert's notification window, and pending
     # deliveries that are still outside their window. Neither is an error.
@@ -569,6 +571,8 @@ class AlertService:
             "llm_successes",
             "llm_failures",
             "llm_tokens",
+            "llm_input_tokens",
+            "llm_output_tokens",
             "llm_duration_seconds",
         ):
             key = field.upper()

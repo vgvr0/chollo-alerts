@@ -25,6 +25,7 @@ from .llm import create_extractor
 from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .models import format_number
+from .observability import ObservabilityServer, ObservabilityState
 from .product import product_type_matches
 from .replay import (
     DEFAULT_REPLAY_LIMIT,
@@ -481,6 +482,12 @@ def main():
                 alert_nlp_mode=telegram.alert_nlp_mode,
             )
         stop = threading.Event()
+        http_server = None
+        if service is not None:
+            observability = ObservabilityState()
+            service.observability = observability
+            http_server = ObservabilityServer(observability, repository)
+            http_server.start()
         previous_handlers = {}
 
         def request_shutdown(signum, _frame):
@@ -509,6 +516,8 @@ def main():
         except KeyboardInterrupt:
             request_shutdown(signal.SIGINT, None)
         finally:
+            if http_server is not None:
+                http_server.close()
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
             repository.close()

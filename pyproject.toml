@@ -16,6 +16,7 @@ dependencies = [
     # it, and the notification windows are defined in a real timezone
     # (`Europe/Madrid` by default), so the data is a declared dependency.
     "tzdata>=2026.4",
+    "prometheus-client>=0.22.0",
 ]
 
 [project.optional-dependencies]

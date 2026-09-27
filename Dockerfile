@@ -12,6 +12,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+EXPOSE 8000
+
 RUN python -m pip install --no-cache-dir "uv==0.12.17"
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project

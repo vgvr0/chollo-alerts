@@ -20,6 +20,8 @@ services:
   scanner:
     <<: *app
     command: ["chollo-alerts", "scan"]
+    ports:
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "chollo-alerts", "health"]
       interval: 60s

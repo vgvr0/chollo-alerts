@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 
 from .adaptive_polling import AdaptivePollingController
 from .config import AdaptivePollingSettings
@@ -67,6 +68,10 @@ def run_scanner(service, interval_minutes=10, pages=1, stop_event=None):
     try:
         while not stop_event.is_set():
             run_id = None
+            started = time.monotonic()
+            observability = getattr(service, "observability", None)
+            if observability is not None:
+                observability.mark_scan_started()
             try:
                 rules = service.repository.list_alert_rules(enabled_only=True)
                 run_id = repository.runtime_scan_started()
@@ -96,6 +101,36 @@ def run_scanner(service, interval_minutes=10, pages=1, stop_event=None):
                     logger.exception("scan.failed run_id=%s", run_id)
                 else:
                     logger.exception("scan.failed")
+                status = "FAILED"
+            except KeyboardInterrupt:
+                status = "INTERRUPTED"
+                raise
+            finally:
+                observability = getattr(service, "observability", None)
+                if observability is not None:
+                    summary = getattr(service, "last_summary", None)
+                    if summary is not None:
+                        try:
+                            active_alerts = len(
+                                repository.list_alert_rules(enabled_only=True)
+                            )
+                        except Exception:  # noqa: BLE001 - metrics must not stop scans
+                            active_alerts = 0
+                        observability.record_run(
+                            summary,
+                            status,
+                            time.monotonic() - started,
+                            active_alerts,
+                        )
+                        logger.info(
+                            "scan.summary status=%s deals_seen=%s alerts_matched=%s "
+                            "notifications_sent=%s notification_failures=%s",
+                            status,
+                            summary.found,
+                            summary.interesting,
+                            summary.telegram_sent,
+                            summary.errors,
+                        )
             try:
                 retention.run_if_due()
             except Exception:

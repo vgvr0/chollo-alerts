@@ -525,6 +525,38 @@ cycle ran), `last_scan_status`, `last_error`, `deals_seen`, `deals_matched` and
 `notifications_sent`, all of them taken from the counters the cycle already
 keeps (`RunSummary`, `scan_runs`).
 
+### Observability
+
+When running `run` or `scan`, the process exposes a small HTTP server on
+`0.0.0.0:${METRICS_PORT:-8000}`:
+
+```text
+GET /health/live
+GET /health/ready
+GET /health
+GET /metrics
+```
+
+For example, with Docker:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/metrics
+```
+
+Use `/health/live` as a liveness/health endpoint for Render or Uptime Kuma,
+and configure Prometheus to scrape `/metrics`. `METRICS_PORT` controls the
+listening port. The endpoints are read-only and expose no credentials or
+alert contents.
+
+The Prometheus surface includes run, deal, alert-match, notification,
+notification-failure, last-scan, last-success, run-duration and active-alert
+metrics. It also includes LLM request, failure, duration and provider-reported
+input/output-token metrics. Token counters remain zero when the provider does
+not return usage; the application does not estimate or tokenize requests
+locally. An estimated-cost metric is intentionally not implemented because
+there is no maintained price table in the project.
+
 ### LLM call observability
 
 The scan summary printed by `check`/the runtime includes `LLM_CALLS`,
@@ -540,9 +572,8 @@ read-only dry-runs. The SQLite `product_extractions` table is the persistent
 cache across cycles and restarts. New rows are keyed by `deal_id`, content
 fingerprint and `product-extraction-v1`; changed content invalidates the row.
 Legacy rows without a fingerprint remain readable by direct deal-id lookups,
-but are revalidated by new content-aware evaluations. There is no Prometheus
-endpoint or dependency in this project, so metrics remain in `RunSummary`, CLI
-output and structured logs.
+but are revalidated by new content-aware evaluations. Prometheus metrics and
+health state are derived from the same per-cycle `RunSummary`.
 
 ## 💾 Persistence
 
