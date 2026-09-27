@@ -235,7 +235,7 @@ class AlertService:
     def recent_deals(self, limit=RECENT_DEALS_DEFAULT_LIMIT):
         """Read the newest persisted deals without scraping, LLM or writes."""
         bounded = min(max(int(limit), 1), RECENT_DEALS_MAX_LIMIT)
-        return self.repository.recent_deals(bounded)
+        return self.repository.recent_deals(bounded, site="chollometro")
 
     def run(self, queries, pages=1, rules=None):
         # Static/check mode is kept for compatibility; the daemon never enters
@@ -288,7 +288,9 @@ class AlertService:
         for deal in deals:
             self.last_summary.found += 1
             claimed = (
-                self.repository.claim_rule_observation(rule_id, deal.deal_id)
+                self.repository.claim_rule_observation(
+                    rule_id, deal.deal_id, site=deal.site
+                )
                 if rule_id is not None and not dry_run
                 else True
             )
@@ -297,7 +299,7 @@ class AlertService:
                 # A retry therefore cannot spend LLM calls or send a second alert.
                 self.last_summary.already_known += 1
                 observation = self.repository.get_rule_observation(
-                    rule_id, deal.deal_id
+                    rule_id, deal.deal_id, deal.site
                 )
                 # A crash after claiming but before Telegram acknowledgement is
                 # retried safely; successful observations remain idempotent.
@@ -307,7 +309,7 @@ class AlertService:
                     self._notify_or_defer(
                         rule_id,
                         deal,
-                        self._stored_evidence(rule_id, deal.deal_id),
+                        self._stored_evidence(rule_id, deal.deal_id, deal.site),
                         window,
                     )
                 continue
@@ -328,7 +330,7 @@ class AlertService:
                 self.last_summary.rejected += 1
                 if rule_id is not None and not dry_run:
                     self.repository.record_rule_observation_result(
-                        rule_id, deal.deal_id, False, result.reason
+                        rule_id, deal.deal_id, False, result.reason, site=deal.site
                     )
                 continue
             self.last_summary.interesting += 1
@@ -343,21 +345,35 @@ class AlertService:
                 momentum=self._momentum_evidence(self._momentum_for(deal), rule),
             )
             if rule_id is not None and hasattr(self.repository, "record_rule_match"):
-                self.repository.record_rule_match(deal.deal_id, rule_id)
+                self.repository.record_rule_match(deal.deal_id, rule_id, deal.site)
                 self.repository.record_rule_observation_result(
-                    rule_id, deal.deal_id, True, None, evidence=evidence.as_dict()
+                    rule_id,
+                    deal.deal_id,
+                    True,
+                    None,
+                    evidence=evidence.as_dict(),
+                    site=deal.site,
                 )
             inserted = self.repository.upsert(deal)
             self.last_summary.new += int(bool(inserted))
-            if rule_id is None and not self.repository.was_notified(deal.deal_id):
+            try:
+                notified = self.repository.was_notified(deal.deal_id, deal.site)
+            except TypeError:
+                notified = self.repository.was_notified(deal.deal_id)
+            if rule_id is None and not notified:
                 self.notifier.send(deal, evidence)
                 if not getattr(self.notifier, "dry_run", False):
-                    self.repository.mark_notified(deal.deal_id)
+                    try:
+                        self.repository.mark_notified(deal.deal_id, deal.site)
+                    except TypeError:
+                        self.repository.mark_notified(deal.deal_id)
                     self.last_summary.telegram_sent += 1
                     if rule_id is not None and hasattr(
                         self.repository, "mark_rule_match_notified"
                     ):
-                        self.repository.mark_rule_match_notified(deal.deal_id, rule_id)
+                        self.repository.mark_rule_match_notified(
+                            deal.deal_id, rule_id, deal.site
+                        )
                 sent += 1
             elif rule_id is not None:
                 sent += int(self._notify_or_defer(rule_id, deal, evidence, window))
@@ -637,7 +653,10 @@ class AlertService:
         batch = getattr(self.feed, "last_feed", None)
         if not self.repository.feed_is_initialized():
             return self._record_feed_baseline(deals, batch, rules)
-        seen = self.repository.seen_feed_thread_ids([deal.deal_id for deal in deals])
+        seen = self.repository.seen_feed_thread_ids(
+            [deal.deal_id for deal in deals],
+            site=deals[0].site if deals else "chollometro",
+        )
         new_deals = [deal for deal in deals if deal.deal_id not in seen]
         self.last_feed_new = len(new_deals)
         self.last_summary.already_known += len(deals) - len(new_deals)
@@ -655,7 +674,9 @@ class AlertService:
             and self.repository.feed_thread_count() > 0
             and (len(seen) == 0 or watermark_gap)
         ):
-            known_history = self.repository.seen_feed_thread_ids()
+            known_history = self.repository.seen_feed_thread_ids(
+                site=deals[0].site if deals else "chollometro"
+            )
             recovered_deals = self._recover_feed_gap(
                 excluded_ids={deal.deal_id for deal in deals} | known_history,
                 known_ids=known_history,
@@ -856,12 +877,14 @@ class AlertService:
                 # The alert is younger than the deal: it must never announce it.
                 self.last_summary.before_alert += 1
                 continue
-            observation = self.repository.get_rule_observation(rule_id, deal.deal_id)
+            observation = self.repository.get_rule_observation(
+                rule_id, deal.deal_id, deal.site
+            )
             if self._already_settled(observation, deal, created_at):
                 self.last_summary.already_known += 1
                 continue
             if observation is None and not self.repository.claim_rule_observation(
-                rule_id, deal.deal_id
+                rule_id, deal.deal_id, site=deal.site
             ):
                 continue
             evaluation = self.evaluator.evaluate(
@@ -896,7 +919,11 @@ class AlertService:
                     evaluation.result.reason,
                 )
                 self.repository.record_rule_observation_result(
-                    rule_id, deal.deal_id, False, evaluation.result.reason
+                    rule_id,
+                    deal.deal_id,
+                    False,
+                    evaluation.result.reason,
+                    site=deal.site,
                 )
                 self.last_summary.rejected += 1
                 continue
@@ -919,7 +946,7 @@ class AlertService:
         if not hasattr(self.repository, "temperature_snapshots"):
             return None
         snapshots = self.repository.temperature_snapshots(
-            deal.deal_id, self._clock() - timedelta(minutes=60)
+            deal.deal_id, self._clock() - timedelta(minutes=60), site=deal.site
         )
         return calculate_momentum(
             snapshots, self._clock(), published_at=deal.published_at
@@ -958,11 +985,13 @@ class AlertService:
             ):
                 continue
             inserted = self.repository.record_temperature_snapshot(
-                deal.deal_id, deal.temperature, now
+                deal.deal_id, deal.temperature, now, site=deal.site
             )
             self.last_summary.temperature_snapshots += int(inserted)
             since = now - timedelta(minutes=60)
-            snapshots = self.repository.temperature_snapshots(deal.deal_id, since)
+            snapshots = self.repository.temperature_snapshots(
+                deal.deal_id, since, site=deal.site
+            )
             momentum = calculate_momentum(
                 snapshots, now, published_at=deal.published_at
             )
@@ -972,7 +1001,9 @@ class AlertService:
             if not settings.enabled:
                 continue
             velocity = momentum.velocity_for(settings.window_minutes)
-            was_above = self.repository.temperature_momentum_above(deal.deal_id)
+            was_above = self.repository.temperature_momentum_above(
+                deal.deal_id, site=deal.site
+            )
             above, should_alert = threshold_transition(
                 was_above,
                 velocity,
@@ -981,7 +1012,9 @@ class AlertService:
             )
             if should_alert:
                 self.last_summary.momentum_alerts += 1
-            self.repository.set_temperature_momentum_above(deal.deal_id, above)
+            self.repository.set_temperature_momentum_above(
+                deal.deal_id, above, site=deal.site
+            )
 
     @staticmethod
     def _already_settled(observation, deal, created_at):
@@ -1020,14 +1053,14 @@ class AlertService:
             return None
         return window_from_alert_rule(alert_rule)
 
-    def _defer(self, rule_id, deal_id, window):
+    def _defer(self, rule_id, deal_id, window, site="chollometro"):
         """True when the alert's window keeps this delivery for later."""
         if window is None or rule_id is None:
             return False
         if window.allows(self._clock()):
             return False
         self.repository.mark_rule_observation_pending(
-            rule_id, deal_id, PENDING_NOTIFICATION_SCHEDULE
+            rule_id, deal_id, PENDING_NOTIFICATION_SCHEDULE, site
         )
         self.last_summary.deferred += 1
         logger.info(
@@ -1046,11 +1079,13 @@ class AlertService:
         alert's window is neither an error nor a loss: it stays pending until a
         cycle runs inside the window.
         """
-        if self._defer(rule_id, deal.deal_id, window):
+        if self._defer(rule_id, deal.deal_id, window, deal.site):
             return False
         self._send_notification(rule_id, deal, evidence)
         if not getattr(self.notifier, "dry_run", False):
-            self.repository.mark_rule_observation_notified(rule_id, deal.deal_id)
+            self.repository.mark_rule_observation_notified(
+                rule_id, deal.deal_id, deal.site
+            )
             self.last_summary.telegram_sent += 1
         return True
 
@@ -1071,24 +1106,25 @@ class AlertService:
         if evidence is None:
             # Retry pass: the alert, the method and the reasons come back from
             # the durable observation written before the failed delivery.
-            evidence = self._stored_evidence(rule_id, deal.deal_id)
-        self.repository.record_rule_match(deal.deal_id, rule_id)
+            evidence = self._stored_evidence(rule_id, deal.deal_id, deal.site)
+        self.repository.record_rule_match(deal.deal_id, rule_id, deal.site)
         self.repository.record_rule_observation_result(
             rule_id,
             deal.deal_id,
             True,
             None,
             evidence=evidence.as_dict() if evidence is not None else None,
+            site=deal.site,
         )
         inserted = self.repository.upsert(deal)
         self.last_summary.new += int(bool(inserted))
-        if self._defer(rule_id, deal.deal_id, window):
+        if self._defer(rule_id, deal.deal_id, window, deal.site):
             return 0
         try:
             self._send_notification(rule_id, deal, evidence)
         except Exception as exc:  # noqa: BLE001 - one delivery must not stop the cycle
             self.repository.mark_rule_observation_pending(
-                rule_id, deal.deal_id, PENDING_TELEGRAM_FAILURE
+                rule_id, deal.deal_id, PENDING_TELEGRAM_FAILURE, deal.site
             )
             self.last_summary.errors += 1
             logger.warning(
@@ -1102,9 +1138,11 @@ class AlertService:
             )
             return 0
         if not getattr(self.notifier, "dry_run", False):
-            self.repository.mark_rule_observation_notified(rule_id, deal.deal_id)
-            self.repository.mark_rule_match_notified(deal.deal_id, rule_id)
-            self.repository.mark_notified(deal.deal_id)
+            self.repository.mark_rule_observation_notified(
+                rule_id, deal.deal_id, deal.site
+            )
+            self.repository.mark_rule_match_notified(deal.deal_id, rule_id, deal.site)
+            self.repository.mark_notified(deal.deal_id, deal.site)
         self.last_summary.telegram_sent += 1
         return 1
 
@@ -1184,12 +1222,12 @@ class AlertService:
             return query
         return getter(rule_id) or query
 
-    def _stored_evidence(self, rule_id, deal_id):
+    def _stored_evidence(self, rule_id, deal_id, site="chollometro"):
         """Evidence persisted with an earlier match, or None for older rows."""
         loader = getattr(self.repository, "rule_observation_evidence", None)
         if loader is None:
             return None
-        payload = loader(rule_id, deal_id)
+        payload = loader(rule_id, deal_id, site)
         return MatchEvidence.from_dict(payload) if payload else None
 
     def _log_feed_window(self, batch, new, overlap=None, initialized=True):

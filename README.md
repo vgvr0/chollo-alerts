@@ -598,21 +598,23 @@ existentes conservando sus ids y tablas de observaciones/matches. Si no hay
 ninguna identidad configurada, no inventa un usuario: las filas quedan en
 compatibilidad legacy hasta que el operador configure el destino.
 
-`DEDUP_KEY = (deal_id, rule_id)`; como `rule_id` pertenece a un usuario, el
-mismo deal puede notificarse legítimamente a dos usuarios distintos. La
-extracción de producto sigue cacheada por deal, fingerprint de contenido y
-versión del extractor, por lo que varias reglas/usuarios reutilizan una sola
-extracción.
+La identidad persistida de un deal es `(site, deal_id)`. Los datos históricos
+se migran de forma transaccional con `site='chollometro'`; la extracción,
+observaciones, matches, feed y estado de temperatura mantienen esa misma
+separación. `DEDUP_KEY = (site, deal_id, rule_id)`; como `rule_id` pertenece a
+un usuario, el mismo deal puede notificarse legítimamente a dos usuarios
+distintos. La extracción de producto sigue cacheada por site, deal, fingerprint
+de contenido y versión del extractor.
 
 | Table | What it holds |
 | --- | --- |
-| `deals` | The deals already seen, keyed by `deal_id`, with `published_at`, `first_seen_at` and `notified_at`. |
+| `deals` | The deals already seen, keyed by `(site, deal_id)`, with `currency`, `published_at`, `first_seen_at` and `notified_at`. |
 | `alert_rules` | The persisted alerts: `query`, `product_type`, `brand`, `max_price`, `price_unit`, `enabled`, `state`, `created_at`, `updated_at`. The structured rule (`structured_rule`) additionally carries the allowed/excluded shops and the notification window. |
-| `feed_threads` | **One row per thread ever seen in the GraphQL feed** (`thread_id` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
+| `feed_threads` | **One row per site/thread ever seen in the GraphQL feed** (`(site, thread_id)` primary key, `published_at`, `first_seen_at`). Its existence is the "seen" state that makes the discovery cycle evaluate only new deals. |
 | `feed_state` | Key/value state of the feed: `bootstrap_at`, `newest_published_at` and, when adaptive polling is enabled, the minimal persisted mode/counter/metric state. |
-| `rule_deal_observations` | One row per (`rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason, `notified_at`, the stored match evidence and `pending_reason` (`TELEGRAM_FAILURE` / `NOTIFICATION_SCHEDULE`) while the pair is still waiting for Telegram. |
-| `deal_rule_matches` | The accepted (`deal_id`, `rule_id`) pairs and when they were matched and notified. |
-| `product_extractions` | The extraction cache (one JSON payload per deal) that avoids repeated LLM calls. |
+| `rule_deal_observations` | One row per (`site`, `rule_id`, `deal_id`): the durable verdict, its `baseline`/`matched` flags, the rejection reason, `notified_at`, the stored match evidence and `pending_reason` (`TELEGRAM_FAILURE` / `NOTIFICATION_SCHEDULE`) while the pair is still waiting for Telegram. |
+| `deal_rule_matches` | The accepted (`site`, `deal_id`, `rule_id`) pairs and when they were matched and notified. |
+| `product_extractions` | The site-aware extraction cache (one JSON payload per `(site, deal_id)`) that avoids repeated LLM calls. |
 | `scan_runs` | One row per cycle and per HTML scan: counters, timings, HTTP status, `status` and `error_type`. The discovery cycle is recorded as `query='graphql:feed'`. |
 | `telegram_updates` | The Telegram update ids already processed. |
 | `error_alerts` | The operational alerts sent, with their fingerprint and cooldown timestamps. |

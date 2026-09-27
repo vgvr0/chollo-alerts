@@ -246,14 +246,21 @@ class DealEvaluator:
         deterministic ones, and they are deliberately not cached: the cache is
         reserved for extractions that were really asked for.
         """
-        known = self.repository.exists(deal.deal_id)
+        try:
+            known = (
+                self.repository.exists(deal.deal_id, deal.site)
+                if deal.site != "chollometro"
+                else self.repository.exists(deal.deal_id)
+            )
+        except TypeError:
+            known = self.repository.exists(deal.deal_id)
         product_text = deal.product_text or deal.title
         cache_key = (deal.deal_id, product_text)
         cached = self._cycle_extractions.get(cache_key)
         if cached is None:
             try:
                 cached = self.repository.get_extraction(
-                    deal.deal_id, product_text=product_text
+                    deal.deal_id, product_text=product_text, site=deal.site
                 )
             except TypeError:
                 # Small repository doubles used by integrations may still
@@ -295,7 +302,7 @@ class DealEvaluator:
                 payload = extraction.model_dump(mode="json")
                 try:
                     self.repository.save_extraction(
-                        deal.deal_id, payload, product_text=product_text
+                        deal.deal_id, payload, product_text=product_text, site=deal.site
                     )
                 except TypeError:
                     # Backward-compatible repository doubles and adapters.

@@ -14,7 +14,52 @@ from .models import Deal, User
 from .product import product_tokens
 from .retention import RetentionResult
 
-DEAL_COLUMNS = "deal_id,title,url,price,merchant,temperature,category,published_at"
+
+class _CompatConnection(sqlite3.Connection):
+    """Accept the repository's historical positional INSERTs during rollout."""
+
+    def execute(self, sql, parameters=(), /):
+        normalized = " ".join(sql.strip().lower().split())
+        if (
+            normalized.startswith("insert into product_extractions values")
+            and len(parameters) == 4
+        ):
+            sql = (
+                "INSERT INTO product_extractions "
+                "(deal_id,payload,content_fingerprint,extractor_version,site) "
+                "VALUES (?,?,?,?,?)"
+            )
+            parameters = (*parameters, DEFAULT_SITE)
+        elif normalized.startswith("insert into deals values") and len(parameters) == 9:
+            sql = (
+                "INSERT INTO deals "
+                "(deal_id,title,url,price,merchant,temperature,category,published_at,first_seen_at,notified_at,site,currency) "
+                "VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)"
+            )
+            parameters = (*parameters, DEFAULT_SITE, "EUR")
+        elif (
+            normalized.startswith("insert into deal_rule_matches values")
+            and len(parameters) == 4
+        ):
+            sql = (
+                "INSERT INTO deal_rule_matches "
+                "(deal_id,rule_id,matched_at,notified_at,site) VALUES (?,?,?,?,?)"
+            )
+            parameters = (*parameters, DEFAULT_SITE)
+        elif (
+            normalized.startswith("insert into feed_threads values")
+            and len(parameters) == 3
+        ):
+            sql = "INSERT INTO feed_threads(thread_id,published_at,first_seen_at,site) VALUES (?,?,?,?)"
+            parameters = (*parameters, DEFAULT_SITE)
+        return super().execute(sql, parameters)
+
+
+SCHEMA_VERSION = 2
+DEFAULT_SITE = "chollometro"
+DEAL_COLUMNS = (
+    "deal_id,title,url,price,merchant,temperature,category,published_at,site,currency"
+)
 
 # Keys of the single-row `feed_state` table used by the GraphQL discovery feed.
 FEED_BOOTSTRAP_KEY = "bootstrap_at"
@@ -97,7 +142,7 @@ class DealRepository:
         with self._connections_lock:
             db = self._connections.get(thread_id)
             if db is None:
-                db = sqlite3.connect(self.path, timeout=10.0)
+                db = sqlite3.connect(self.path, timeout=10.0, factory=_CompatConnection)
                 db.execute("PRAGMA busy_timeout=10000")
                 db.execute("PRAGMA journal_mode=WAL")
                 self._connections[thread_id] = db
@@ -107,6 +152,7 @@ class DealRepository:
             return db
 
     def _initialize(self, db):
+        current_schema = db.execute("PRAGMA user_version").fetchone()[0]
         db.execute("""CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_user_id TEXT UNIQUE,
@@ -117,14 +163,24 @@ class DealRepository:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""")
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS deals (deal_id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, price TEXT, merchant TEXT, temperature INTEGER, category TEXT NOT NULL, published_at TEXT, first_seen_at TEXT NOT NULL, notified_at TEXT)"""
-        )
+        db.execute("""CREATE TABLE IF NOT EXISTS deals (
+            deal_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+            price TEXT, merchant TEXT, temperature INTEGER, category TEXT NOT NULL,
+            published_at TEXT, first_seen_at TEXT NOT NULL, notified_at TEXT,
+            site TEXT NOT NULL DEFAULT 'chollometro', currency TEXT NOT NULL DEFAULT 'EUR',
+            PRIMARY KEY (site, deal_id)
+        )""")
+        if current_schema < SCHEMA_VERSION and not any(
+            row[1] == "currency" for row in db.execute("PRAGMA table_info(deals)")
+        ):
+            db.execute(
+                "ALTER TABLE deals ADD COLUMN currency TEXT NOT NULL DEFAULT 'EUR'"
+            )
         db.execute(
             "CREATE TABLE IF NOT EXISTS error_alerts (fingerprint TEXT PRIMARY KEY, error_type TEXT NOT NULL, component TEXT NOT NULL, message TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_notified_at TEXT, occurrence_count INTEGER NOT NULL)"
         )
         db.execute(
-            "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT PRIMARY KEY, payload TEXT NOT NULL, content_fingerprint TEXT, extractor_version TEXT)"
+            "CREATE TABLE IF NOT EXISTS product_extractions (deal_id TEXT NOT NULL, payload TEXT NOT NULL, content_fingerprint TEXT, extractor_version TEXT, site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, deal_id))"
         )
         extraction_columns = {
             row[1] for row in db.execute("PRAGMA table_info(product_extractions)")
@@ -156,7 +212,8 @@ class DealRepository:
         db.execute("""CREATE TABLE IF NOT EXISTS deal_rule_matches (
             deal_id TEXT NOT NULL, rule_id INTEGER NOT NULL,
             matched_at TEXT NOT NULL, notified_at TEXT,
-            UNIQUE(deal_id, rule_id)
+            site TEXT NOT NULL DEFAULT 'chollometro',
+            UNIQUE(site, deal_id, rule_id)
         )""")
         db.execute("""CREATE TABLE IF NOT EXISTS rule_deal_observations (
             rule_id INTEGER NOT NULL, deal_id TEXT NOT NULL,
@@ -164,7 +221,8 @@ class DealRepository:
             baseline INTEGER NOT NULL DEFAULT 0, matched INTEGER,
             rejection_reason TEXT, notified_at TEXT, evidence TEXT,
             pending_reason TEXT,
-            PRIMARY KEY (rule_id, deal_id)
+            site TEXT NOT NULL DEFAULT 'chollometro',
+            PRIMARY KEY (site, rule_id, deal_id)
         )""")
         # Migrate databases created before the match evidence was stored: the
         # durable evidence is what lets a retried notification explain the
@@ -236,8 +294,9 @@ class DealRepository:
         # `first_seen_at` is the discovery time, `published_at` the provider
         # timestamp of the thread (what the alert window compares against).
         db.execute("""CREATE TABLE IF NOT EXISTS feed_threads (
-            thread_id TEXT PRIMARY KEY, published_at TEXT,
-            first_seen_at TEXT NOT NULL
+            thread_id TEXT NOT NULL, published_at TEXT,
+            first_seen_at TEXT NOT NULL, site TEXT NOT NULL DEFAULT 'chollometro',
+            PRIMARY KEY (site, thread_id)
         )""")
         db.execute("""CREATE TABLE IF NOT EXISTS feed_state (
             key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -272,12 +331,25 @@ class DealRepository:
         db.execute("""CREATE TABLE IF NOT EXISTS deal_temperature_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
             temperature REAL NOT NULL, observed_at TEXT NOT NULL,
-            UNIQUE(thread_id, temperature, observed_at))""")
+            site TEXT NOT NULL DEFAULT 'chollometro',
+            UNIQUE(site, thread_id, temperature, observed_at))""")
         db.execute("""CREATE TABLE IF NOT EXISTS temperature_momentum_state (
-            thread_id TEXT PRIMARY KEY, above_threshold INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL)""")
+            thread_id TEXT NOT NULL, above_threshold INTEGER NOT NULL DEFAULT 0,
+            site TEXT NOT NULL DEFAULT 'chollometro', updated_at TEXT NOT NULL,
+            PRIMARY KEY (site, thread_id))""")
+        if current_schema < SCHEMA_VERSION:
+            self._migrate_site_aware(db)
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_thread_time ON deal_temperature_snapshots(thread_id, observed_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deals_site_recent ON deals(site, published_at, first_seen_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_matches_site_rule ON deal_rule_matches(site, rule_id, matched_at)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_observations_site_pending ON rule_deal_observations(site, matched, notified_at, first_seen_at)"
         )
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_observed_at ON deal_temperature_snapshots(observed_at)"
@@ -291,7 +363,105 @@ class DealRepository:
         self._migrate_alert_ownership(
             db, legacy_ownership_schema=legacy_ownership_schema
         )
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         db.commit()
+
+    def _migrate_site_aware(self, db):
+        """Upgrade legacy deal identity tables atomically and idempotently."""
+        tables = {
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        db.execute("SAVEPOINT site_aware_storage")
+        try:
+            # Existing databases are rebuilt because SQLite cannot add a column
+            # to a composite primary key.  The explicit counts make accidental
+            # loss fail before the savepoint is released.
+            for table, ddl, columns in (
+                (
+                    "deals",
+                    """CREATE TABLE deals_new (
+                    deal_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+                    price TEXT, merchant TEXT, temperature INTEGER, category TEXT NOT NULL,
+                    published_at TEXT, first_seen_at TEXT NOT NULL, notified_at TEXT,
+                    site TEXT NOT NULL DEFAULT 'chollometro', currency TEXT NOT NULL DEFAULT 'EUR',
+                    PRIMARY KEY (site, deal_id))""",
+                    "deal_id,title,url,price,merchant,temperature,category,published_at,first_seen_at,notified_at,currency",
+                ),
+                (
+                    "product_extractions",
+                    """CREATE TABLE product_extractions_new (
+                    deal_id TEXT NOT NULL, payload TEXT NOT NULL, content_fingerprint TEXT,
+                    extractor_version TEXT, site TEXT NOT NULL DEFAULT 'chollometro',
+                    PRIMARY KEY (site, deal_id))""",
+                    "deal_id,payload,content_fingerprint,extractor_version",
+                ),
+                (
+                    "deal_rule_matches",
+                    """CREATE TABLE deal_rule_matches_new (
+                    deal_id TEXT NOT NULL, rule_id INTEGER NOT NULL, matched_at TEXT NOT NULL,
+                    notified_at TEXT, site TEXT NOT NULL DEFAULT 'chollometro',
+                    UNIQUE(site, deal_id, rule_id))""",
+                    "deal_id,rule_id,matched_at,notified_at",
+                ),
+                (
+                    "rule_deal_observations",
+                    """CREATE TABLE rule_deal_observations_new (
+                    rule_id INTEGER NOT NULL, deal_id TEXT NOT NULL, first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL, baseline INTEGER NOT NULL DEFAULT 0,
+                    matched INTEGER, rejection_reason TEXT, notified_at TEXT, evidence TEXT,
+                    pending_reason TEXT, site TEXT NOT NULL DEFAULT 'chollometro',
+                    PRIMARY KEY (site, rule_id, deal_id))""",
+                    "rule_id,deal_id,first_seen_at,last_seen_at,baseline,matched,rejection_reason,notified_at,evidence,pending_reason",
+                ),
+                (
+                    "feed_threads",
+                    """CREATE TABLE feed_threads_new (
+                    thread_id TEXT NOT NULL, published_at TEXT, first_seen_at TEXT NOT NULL,
+                    site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, thread_id))""",
+                    "thread_id,published_at,first_seen_at",
+                ),
+                (
+                    "deal_temperature_snapshots",
+                    """CREATE TABLE deal_temperature_snapshots_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
+                    temperature REAL NOT NULL, observed_at TEXT NOT NULL,
+                    site TEXT NOT NULL DEFAULT 'chollometro',
+                    UNIQUE(site, thread_id, temperature, observed_at))""",
+                    "id,thread_id,temperature,observed_at",
+                ),
+                (
+                    "temperature_momentum_state",
+                    """CREATE TABLE temperature_momentum_state_new (
+                    thread_id TEXT NOT NULL, above_threshold INTEGER NOT NULL DEFAULT 0,
+                    site TEXT NOT NULL DEFAULT 'chollometro', updated_at TEXT NOT NULL,
+                    PRIMARY KEY (site, thread_id))""",
+                    "thread_id,above_threshold,updated_at",
+                ),
+            ):
+                if table not in tables:
+                    continue
+                if any(
+                    row[1] == "site"
+                    for row in db.execute(f"PRAGMA table_info({table})")
+                ):
+                    continue
+                db.execute(ddl)
+                before = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                db.execute(
+                    f"INSERT INTO {table}_new ({columns},site) SELECT {columns},? FROM {table}",
+                    (DEFAULT_SITE,),
+                )
+                after = db.execute(f"SELECT COUNT(*) FROM {table}_new").fetchone()[0]
+                if before != after:
+                    raise RuntimeError(f"site migration lost rows in {table}")
+                db.execute(f"DROP TABLE {table}")
+                db.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+            db.execute("RELEASE SAVEPOINT site_aware_storage")
+        except Exception:
+            db.execute("ROLLBACK TO SAVEPOINT site_aware_storage")
+            db.execute("RELEASE SAVEPOINT site_aware_storage")
+            raise
 
     def _migrate_alert_ownership(self, db, *, legacy_ownership_schema=False):
         legacy_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or None
@@ -537,18 +707,20 @@ class DealRepository:
         if db is not None:
             db.close()
 
-    def record_temperature_snapshot(self, thread_id, temperature, observed_at=None):
+    def record_temperature_snapshot(
+        self, thread_id, temperature, observed_at=None, site=DEFAULT_SITE
+    ):
         stamp = as_utc(observed_at or datetime.now(UTC)).isoformat()
         cur = self.db.execute(
-            "INSERT OR IGNORE INTO deal_temperature_snapshots(thread_id,temperature,observed_at) VALUES (?,?,?)",
-            (str(thread_id), float(temperature), stamp),
+            "INSERT OR IGNORE INTO deal_temperature_snapshots(thread_id,temperature,observed_at,site) VALUES (?,?,?,?)",
+            (str(thread_id), float(temperature), stamp, site),
         )
         self.db.commit()
         return cur.rowcount == 1
 
-    def temperature_snapshots(self, thread_id, since=None):
-        query = "SELECT thread_id,temperature,observed_at FROM deal_temperature_snapshots WHERE thread_id=?"
-        params = [str(thread_id)]
+    def temperature_snapshots(self, thread_id, since=None, site=DEFAULT_SITE):
+        query = "SELECT thread_id,temperature,observed_at FROM deal_temperature_snapshots WHERE site=? AND thread_id=?"
+        params = [site, str(thread_id)]
         if since is not None:
             query += " AND observed_at>=?"
             params.append(as_utc(since).isoformat())
@@ -601,7 +773,7 @@ class DealRepository:
             ),
             "cache_entries": self._eligible_count(
                 """SELECT COUNT(*) FROM product_extractions p
-                   JOIN deals d ON d.deal_id=p.deal_id
+                   JOIN deals d ON d.site=p.site AND d.deal_id=p.deal_id
                    WHERE d.first_seen_at < ?""",
                 (cutoffs["cache"],),
             ),
@@ -653,7 +825,7 @@ class DealRepository:
             (
                 "cache_entries",
                 """DELETE FROM product_extractions WHERE rowid IN
-             (SELECT p.rowid FROM product_extractions p JOIN deals d ON d.deal_id=p.deal_id
+             (SELECT p.rowid FROM product_extractions p JOIN deals d ON d.site=p.site AND d.deal_id=p.deal_id
               WHERE d.first_seen_at < ? LIMIT ?)""",
                 cutoffs["cache"],
             ),
@@ -693,17 +865,17 @@ class DealRepository:
         self.db.execute("VACUUM")
         self.db.commit()
 
-    def temperature_momentum_above(self, thread_id):
+    def temperature_momentum_above(self, thread_id, site=DEFAULT_SITE):
         row = self.db.execute(
-            "SELECT above_threshold FROM temperature_momentum_state WHERE thread_id=?",
-            (str(thread_id),),
+            "SELECT above_threshold FROM temperature_momentum_state WHERE site=? AND thread_id=?",
+            (site, str(thread_id)),
         ).fetchone()
         return bool(row[0]) if row else False
 
-    def set_temperature_momentum_above(self, thread_id, above):
+    def set_temperature_momentum_above(self, thread_id, above, site=DEFAULT_SITE):
         self.db.execute(
-            "INSERT INTO temperature_momentum_state(thread_id,above_threshold,updated_at) VALUES (?,?,?) ON CONFLICT(thread_id) DO UPDATE SET above_threshold=excluded.above_threshold,updated_at=excluded.updated_at",
-            (str(thread_id), int(above), datetime.now(UTC).isoformat()),
+            "INSERT INTO temperature_momentum_state(thread_id,above_threshold,updated_at,site) VALUES (?,?,?,?) ON CONFLICT(site,thread_id) DO UPDATE SET above_threshold=excluded.above_threshold,updated_at=excluded.updated_at",
+            (str(thread_id), int(above), datetime.now(UTC).isoformat(), site),
         )
         self.db.commit()
 
@@ -991,18 +1163,18 @@ class DealRepository:
             (*row, structured[0] if structured is not None else None)
         )
 
-    def _related_deal_rows(self, terms):
+    def _related_deal_rows(self, terms, site=DEFAULT_SITE):
         if not terms:
             return []
         where = " AND ".join("lower(title) LIKE ?" for _ in terms)
         params = [f"%{term}%" for term in terms]
         return self.db.execute(
-            f"SELECT {DEAL_COLUMNS} FROM deals WHERE {where} "
+            f"SELECT {DEAL_COLUMNS} FROM deals WHERE site=? AND {where} "
             "ORDER BY first_seen_at DESC, deal_id DESC",
-            params,
+            [site, *params],
         ).fetchall()
 
-    def historical_deals(self, terms=(), category=None):
+    def historical_deals(self, terms=(), category=None, site=DEFAULT_SITE):
         """Read-only lookup of stored deals reasonably related to an alert query.
 
         Only already persisted rows are returned: the replay never scrapes and
@@ -1010,33 +1182,34 @@ class DealRepository:
         the stored title, which is the local text available for old deals.
         """
         normalized_terms = [t.casefold() for t in terms if t]
-        rows = list(self._related_deal_rows(normalized_terms))
+        rows = list(self._related_deal_rows(normalized_terms, site))
         if not normalized_terms and not category:
             rows = list(
                 self.db.execute(
-                    f"SELECT {DEAL_COLUMNS} FROM deals ORDER BY first_seen_at DESC, deal_id DESC"
+                    f"SELECT {DEAL_COLUMNS} FROM deals WHERE site=? ORDER BY first_seen_at DESC, deal_id DESC",
+                    (site,),
                 )
             )
         seen = {row[0] for row in rows}
         if category:
             for row in self.db.execute(
-                f"SELECT {DEAL_COLUMNS} FROM deals WHERE lower(category)=? "
+                f"SELECT {DEAL_COLUMNS} FROM deals WHERE site=? AND lower(category)=? "
                 "ORDER BY first_seen_at DESC, deal_id DESC",
-                (category.casefold(),),
+                (site, category.casefold()),
             ):
                 if row[0] not in seen:
                     seen.add(row[0])
                     rows.append(row)
         return [self.deal_from_row(row) for row in rows]
 
-    def recent_deals(self, limit=5):
+    def recent_deals(self, limit=5, site=DEFAULT_SITE):
         """Return the newest already-persisted deals, without provider calls."""
         limit = min(max(int(limit), 1), 20)
         rows = self.db.execute(
-            f"SELECT {DEAL_COLUMNS} FROM deals "
+            f"SELECT {DEAL_COLUMNS} FROM deals WHERE site=? "
             "ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END, "
             "published_at DESC, first_seen_at DESC, deal_id DESC LIMIT ?",
-            (limit,),
+            (site, limit),
         ).fetchall()
         return [self.deal_from_row(row) for row in rows]
 
@@ -1052,6 +1225,8 @@ class DealRepository:
             temperature,
             category,
             published_at,
+            site,
+            currency,
         ) = row
         return Deal(
             deal_id,
@@ -1063,6 +1238,8 @@ class DealRepository:
             category,
             datetime.fromisoformat(published_at) if published_at else None,
             product_text=title,
+            site=site or DEFAULT_SITE,
+            currency=currency or "EUR",
         )
 
     def attach_alert_rule(self, rule_id, rule, original_text=None, user_id=None):
@@ -1142,10 +1319,12 @@ class DealRepository:
             FEED_BOOTSTRAP_KEY, as_utc(at or datetime.now(UTC)).isoformat()
         )
 
-    def seen_feed_thread_ids(self, thread_ids=None):
+    def seen_feed_thread_ids(self, thread_ids=None, site=DEFAULT_SITE):
         """Thread ids already present in the feed store (all, or the given ones)."""
         if thread_ids is None:
-            rows = self.db.execute("SELECT thread_id FROM feed_threads")
+            rows = self.db.execute(
+                "SELECT thread_id FROM feed_threads WHERE site=?", (site,)
+            )
             return {row[0] for row in rows}
         wanted = [str(thread_id) for thread_id in thread_ids]
         if not wanted:
@@ -1157,8 +1336,8 @@ class DealRepository:
             chunk = wanted[start : start + 500]
             placeholders = ",".join("?" * len(chunk))
             rows = self.db.execute(
-                f"SELECT thread_id FROM feed_threads WHERE thread_id IN ({placeholders})",
-                chunk,
+                f"SELECT thread_id FROM feed_threads WHERE site=? AND thread_id IN ({placeholders})",
+                [site, *chunk],
             )
             seen.update(row[0] for row in rows)
         return seen
@@ -1181,6 +1360,7 @@ class DealRepository:
                 deal.deal_id,
                 deal.published_at.isoformat() if deal.published_at else None,
                 now,
+                deal.site,
             )
             for deal in deals
             if deal.deal_id
@@ -1189,7 +1369,7 @@ class DealRepository:
             return 0
         cur = self.db.executemany(
             """INSERT OR IGNORE INTO feed_threads
-            (thread_id,published_at,first_seen_at) VALUES (?,?,?)""",
+            (thread_id,published_at,first_seen_at,site) VALUES (?,?,?,?)""",
             rows,
         )
         self.db.commit()
@@ -1216,7 +1396,7 @@ class DealRepository:
             for rule_id, deal_id, _reason in self.pending_notification_rows(limit)
         ]
 
-    def pending_notification_rows(self, limit=50):
+    def pending_notification_rows(self, limit=50, site=DEFAULT_SITE):
         """The same pending pairs, with why each one is still pending.
 
         `pending_reason` is `TELEGRAM_FAILURE` when a delivery really failed and
@@ -1228,16 +1408,17 @@ class DealRepository:
             """SELECT o.rule_id, o.deal_id, o.pending_reason
             FROM rule_deal_observations o
             JOIN alert_rules r ON r.id = o.rule_id
-            WHERE r.enabled = 1 AND o.matched = 1 AND o.notified_at IS NULL
+            WHERE r.enabled = 1 AND o.matched = 1 AND o.notified_at IS NULL AND o.site=?
             ORDER BY o.first_seen_at, o.deal_id LIMIT ?""",
-            (limit,),
+            (site, limit),
         ).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]
 
-    def get_deal(self, deal_id):
+    def get_deal(self, deal_id, site=DEFAULT_SITE):
         """Rebuild a persisted deal (used to re-render a pending notification)."""
         row = self.db.execute(
-            f"SELECT {DEAL_COLUMNS} FROM deals WHERE deal_id=?", (deal_id,)
+            f"SELECT {DEAL_COLUMNS} FROM deals WHERE site=? AND deal_id=?",
+            (site, deal_id),
         ).fetchone()
         return self.deal_from_row(row) if row else None
 
@@ -1266,38 +1447,47 @@ class DealRepository:
             )
         self.db.commit()
 
-    def claim_rule_observation(self, rule_id, deal_id, *, baseline=False):
+    def claim_rule_observation(
+        self, rule_id, deal_id, *, baseline=False, site=DEFAULT_SITE
+    ):
         now = datetime.now(UTC).isoformat()
         cur = self.db.execute(
-            "INSERT OR IGNORE INTO rule_deal_observations(rule_id,deal_id,first_seen_at,last_seen_at,baseline) VALUES (?,?,?,?,?)",
-            (rule_id, deal_id, now, now, int(baseline)),
+            "INSERT OR IGNORE INTO rule_deal_observations(rule_id,deal_id,first_seen_at,last_seen_at,baseline,site) VALUES (?,?,?,?,?,?)",
+            (rule_id, deal_id, now, now, int(baseline), site),
         )
         if cur.rowcount == 0:
             self.db.execute(
-                "UPDATE rule_deal_observations SET last_seen_at=? WHERE rule_id=? AND deal_id=?",
-                (now, rule_id, deal_id),
+                "UPDATE rule_deal_observations SET last_seen_at=? WHERE site=? AND rule_id=? AND deal_id=?",
+                (now, site, rule_id, deal_id),
             )
         self.db.commit()
         return cur.rowcount == 1
 
     def record_rule_observation_result(
-        self, rule_id, deal_id, matched, rejection_reason=None, *, evidence=None
+        self,
+        rule_id,
+        deal_id,
+        matched,
+        rejection_reason=None,
+        *,
+        evidence=None,
+        site=DEFAULT_SITE,
     ):
         # A row that carries a verdict is not a baseline snapshot any more, so
         # the flag is cleared here: baseline rows have no verdict by definition.
         stored = json.dumps(evidence, default=str) if evidence is not None else None
         self.db.execute(
             "UPDATE rule_deal_observations SET matched=?,baseline=0,rejection_reason=?,"
-            "evidence=?,pending_reason=NULL WHERE rule_id=? AND deal_id=?",
-            (int(matched), rejection_reason, stored, rule_id, deal_id),
+            "evidence=?,pending_reason=NULL WHERE site=? AND rule_id=? AND deal_id=?",
+            (int(matched), rejection_reason, stored, site, rule_id, deal_id),
         )
         self.db.commit()
 
-    def rule_observation_evidence(self, rule_id, deal_id):
+    def rule_observation_evidence(self, rule_id, deal_id, site=DEFAULT_SITE):
         """The evidence stored with the verdict of one (rule, deal) pair."""
         row = self.db.execute(
-            "SELECT evidence FROM rule_deal_observations WHERE rule_id=? AND deal_id=?",
-            (rule_id, deal_id),
+            "SELECT evidence FROM rule_deal_observations WHERE site=? AND rule_id=? AND deal_id=?",
+            (site, rule_id, deal_id),
         ).fetchone()
         if row is None or not row[0]:
             return None
@@ -1307,29 +1497,31 @@ class DealRepository:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def mark_rule_observation_notified(self, rule_id, deal_id):
+    def mark_rule_observation_notified(self, rule_id, deal_id, site=DEFAULT_SITE):
         """The delivery succeeded: the pair is neither pending nor retried."""
         self.db.execute(
             "UPDATE rule_deal_observations SET notified_at=?,pending_reason=NULL "
-            "WHERE rule_id=? AND deal_id=?",
-            (datetime.now(UTC).isoformat(), rule_id, deal_id),
+            "WHERE site=? AND rule_id=? AND deal_id=?",
+            (datetime.now(UTC).isoformat(), site, rule_id, deal_id),
         )
         self.db.commit()
 
-    def mark_rule_observation_pending(self, rule_id, deal_id, reason):
+    def mark_rule_observation_pending(
+        self, rule_id, deal_id, reason, site=DEFAULT_SITE
+    ):
         """Record why a durable match is still waiting for Telegram."""
         self.db.execute(
             "UPDATE rule_deal_observations SET pending_reason=? "
-            "WHERE rule_id=? AND deal_id=?",
-            (reason, rule_id, deal_id),
+            "WHERE site=? AND rule_id=? AND deal_id=?",
+            (reason, site, rule_id, deal_id),
         )
         self.db.commit()
 
-    def rule_observation_pending_reason(self, rule_id, deal_id):
+    def rule_observation_pending_reason(self, rule_id, deal_id, site=DEFAULT_SITE):
         row = self.db.execute(
             "SELECT pending_reason FROM rule_deal_observations "
-            "WHERE rule_id=? AND deal_id=?",
-            (rule_id, deal_id),
+            "WHERE site=? AND rule_id=? AND deal_id=?",
+            (site, rule_id, deal_id),
         ).fetchone()
         return row[0] if row else None
 
@@ -1338,10 +1530,10 @@ class DealRepository:
             "SELECT * FROM rule_deal_observations WHERE rule_id=?", (rule_id,)
         ).fetchall()
 
-    def get_rule_observation(self, rule_id, deal_id):
+    def get_rule_observation(self, rule_id, deal_id, site=DEFAULT_SITE):
         return self.db.execute(
-            "SELECT * FROM rule_deal_observations WHERE rule_id=? AND deal_id=?",
-            (rule_id, deal_id),
+            "SELECT * FROM rule_deal_observations WHERE site=? AND rule_id=? AND deal_id=?",
+            (site, rule_id, deal_id),
         ).fetchone()
 
     def claim_telegram_update(self, update_id):
@@ -1442,7 +1634,7 @@ class DealRepository:
     def upsert(self, deal: Deal) -> bool:
         now = datetime.now(UTC).isoformat()
         cur = self.db.execute(
-            "INSERT OR IGNORE INTO deals VALUES (?,?,?,?,?,?,?,?,?,NULL)",
+            "INSERT OR IGNORE INTO deals(deal_id,title,url,price,merchant,temperature,category,published_at,first_seen_at,notified_at,site,currency) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
             (
                 deal.deal_id,
                 deal.title,
@@ -1453,23 +1645,26 @@ class DealRepository:
                 deal.category,
                 deal.published_at.isoformat() if deal.published_at else None,
                 now,
+                deal.site,
+                deal.currency,
             ),
         )
         self.db.commit()
         return cur.rowcount == 1
 
-    def was_notified(self, deal_id):
+    def was_notified(self, deal_id, site=DEFAULT_SITE):
         return (
             self.db.execute(
-                "SELECT notified_at FROM deals WHERE deal_id=?", (deal_id,)
+                "SELECT notified_at FROM deals WHERE site=? AND deal_id=?",
+                (site, deal_id),
             ).fetchone()[0]
             is not None
         )
 
-    def mark_notified(self, deal_id):
+    def mark_notified(self, deal_id, site=DEFAULT_SITE):
         self.db.execute(
-            "UPDATE deals SET notified_at=? WHERE deal_id=?",
-            (datetime.now(UTC).isoformat(), deal_id),
+            "UPDATE deals SET notified_at=? WHERE site=? AND deal_id=?",
+            (datetime.now(UTC).isoformat(), site, deal_id),
         )
         self.db.commit()
 
@@ -1589,36 +1784,39 @@ class DealRepository:
         )
         self.db.commit()
 
-    def record_rule_match(self, deal_id, rule_id):
+    def record_rule_match(self, deal_id, rule_id, site=DEFAULT_SITE):
         now = datetime.now(UTC).isoformat()
         self.db.execute(
-            "INSERT OR IGNORE INTO deal_rule_matches(deal_id,rule_id,matched_at) VALUES (?,?,?)",
-            (deal_id, rule_id, now),
+            "INSERT OR IGNORE INTO deal_rule_matches(deal_id,rule_id,matched_at,site) VALUES (?,?,?,?)",
+            (deal_id, rule_id, now, site),
         )
         self.db.commit()
 
-    def mark_rule_match_notified(self, deal_id, rule_id):
+    def mark_rule_match_notified(self, deal_id, rule_id, site=DEFAULT_SITE):
         self.db.execute(
-            "UPDATE deal_rule_matches SET notified_at=? WHERE deal_id=? AND rule_id=?",
-            (datetime.now(UTC).isoformat(), deal_id, rule_id),
+            "UPDATE deal_rule_matches SET notified_at=? WHERE site=? AND deal_id=? AND rule_id=?",
+            (datetime.now(UTC).isoformat(), site, deal_id, rule_id),
         )
         self.db.commit()
 
-    def exists(self, deal_id: str) -> bool:
+    def exists(self, deal_id: str, site=DEFAULT_SITE) -> bool:
         return (
             self.db.execute(
-                "SELECT 1 FROM deals WHERE deal_id=?", (deal_id,)
+                "SELECT 1 FROM deals WHERE site=? AND deal_id=?", (site, deal_id)
             ).fetchone()
             is not None
         )
 
-    def known_deal_ids(self):
-        return {r[0] for r in self.db.execute("SELECT deal_id FROM deals")}
+    def known_deal_ids(self, site=DEFAULT_SITE):
+        return {
+            r[0]
+            for r in self.db.execute("SELECT deal_id FROM deals WHERE site=?", (site,))
+        }
 
-    def get_extraction(self, deal_id, product_text=None):
+    def get_extraction(self, deal_id, product_text=None, site=DEFAULT_SITE):
         row = self.db.execute(
-            "SELECT payload, content_fingerprint, extractor_version FROM product_extractions WHERE deal_id=?",
-            (deal_id,),
+            "SELECT payload, content_fingerprint, extractor_version FROM product_extractions WHERE site=? AND deal_id=?",
+            (site, deal_id),
         ).fetchone()
         if row is None:
             return None
@@ -1632,9 +1830,9 @@ class DealRepository:
                 return None
         return json.loads(row[0])
 
-    def save_extraction(self, deal_id, payload, product_text=None):
+    def save_extraction(self, deal_id, payload, product_text=None, site=DEFAULT_SITE):
         self.db.execute(
-            "INSERT OR REPLACE INTO product_extractions VALUES (?,?,?,?)",
+            "INSERT OR REPLACE INTO product_extractions(deal_id,payload,content_fingerprint,extractor_version,site) VALUES (?,?,?,?,?)",
             (
                 deal_id,
                 json.dumps(payload, default=str),
@@ -1642,6 +1840,7 @@ class DealRepository:
                 if product_text is not None
                 else None,
                 EXTRACTION_CACHE_VERSION if product_text is not None else None,
+                site,
             ),
         )
         self.db.commit()
