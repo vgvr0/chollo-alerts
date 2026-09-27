@@ -46,6 +46,8 @@ Avísame de leche por debajo de 0,80 €/L
 Avísame de zapatillas ASICS por menos de 80 €
 Avísame de cualquier chollo con más de 500°
 Avísame de portátiles por menos de 700 € de Amazon pero no AliExpress
+Notify me about LEGO Technic deals under €80
+Notify me about robot vacuum cleaners with at least 40% off
 ```
 
 ## ✨ Highlights
