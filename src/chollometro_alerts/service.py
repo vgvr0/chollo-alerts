@@ -456,7 +456,10 @@ class AlertService:
             return len(deals)
         for deal in deals:
             self.repository.upsert(deal)
-            self.repository.mark_notified(deal.deal_id)
+            try:
+                self.repository.mark_notified(deal.deal_id, deal.site)
+            except TypeError:
+                self.repository.mark_notified(deal.deal_id)
         return len(deals)
 
     def baseline_rule(self, rule_id, query, pages=1):
@@ -466,7 +469,7 @@ class AlertService:
             for deal in deals:
                 self.repository.upsert(deal)
                 self.repository.claim_rule_observation(
-                    rule_id, deal.deal_id, baseline=True
+                    rule_id, deal.deal_id, baseline=True, site=deal.site
                 )
             self.repository.set_rule_state(rule_id, "ACTIVE", enabled=True)
             return len(deals)
@@ -647,22 +650,23 @@ class AlertService:
         except ChollometroError as exc:
             return self._feed_fallback(pages, exc)
         deals = _unique_feed_deals(deals)
+        site = deals[0].site if deals else self._service_site()
         self.last_summary.found = len(deals)
         self._observe_temperature_momentum(deals)
         self.last_feed_received = len(deals)
         batch = getattr(self.feed, "last_feed", None)
-        if not self.repository.feed_is_initialized():
+        if not self.repository.feed_is_initialized(site):
             return self._record_feed_baseline(deals, batch, rules)
         seen = self.repository.seen_feed_thread_ids(
             [deal.deal_id for deal in deals],
-            site=deals[0].site if deals else "chollometro",
+            site=site,
         )
         new_deals = [deal for deal in deals if deal.deal_id not in seen]
         self.last_feed_new = len(new_deals)
         self.last_summary.already_known += len(deals) - len(new_deals)
         self._log_feed_window(batch, new=len(new_deals), overlap=len(seen))
         recovered_deals = []
-        previous_watermark = self.repository.feed_watermark()
+        previous_watermark = self.repository.feed_watermark(site)
         watermark_gap = bool(
             batch is not None
             and batch.oldest_published_at is not None
@@ -671,12 +675,10 @@ class AlertService:
         )
         if overlap_is_gap := (
             len(deals) > 0
-            and self.repository.feed_thread_count() > 0
+            and self.repository.feed_thread_count(site) > 0
             and (len(seen) == 0 or watermark_gap)
         ):
-            known_history = self.repository.seen_feed_thread_ids(
-                site=deals[0].site if deals else "chollometro"
-            )
+            known_history = self.repository.seen_feed_thread_ids(site=site)
             recovered_deals = self._recover_feed_gap(
                 excluded_ids={deal.deal_id for deal in deals} | known_history,
                 known_ids=known_history,
@@ -705,7 +707,7 @@ class AlertService:
             # failed delivery is retried from its pending observation.
             self.repository.record_feed_threads([deal])
         self.repository.set_feed_watermark(
-            batch.newest_published_at if batch is not None else None
+            batch.newest_published_at if batch is not None else None, site=site
         )
         recovery_status = self.last_gap_recovery["status"]
         scan_status = SCAN_SUCCESS
@@ -850,13 +852,14 @@ class AlertService:
         for deal in deals:
             sent += self._process_feed_deal(deal, rules, extractor, initial_metrics)
             self.repository.record_feed_threads([deal])
-        self.repository.mark_feed_initialized()
+        site = deals[0].site if deals else self._service_site()
+        self.repository.mark_feed_initialized(site=site)
         # Every thread of the window is seen for the first time.
         self.last_feed_new = len(deals)
         # No history exists yet, so "no overlap" cannot mean anything here.
         self._log_feed_window(batch, new=len(deals), overlap=None, initialized=False)
         self.repository.set_feed_watermark(
-            batch.newest_published_at if batch is not None else None
+            batch.newest_published_at if batch is not None else None, site=site
         )
         logger.info(
             "feed_baseline_recorded threads=%s window_limit=%s eligible_sent=%s",
@@ -1170,8 +1173,9 @@ class AlertService:
         enabled = {entry[0] for entry in rules}
         windows = {entry[0]: window_from_alert_rule(entry[1]) for entry in rules}
         sent = 0
+        site = self._service_site()
         for rule_id, deal_id in self.repository.pending_rule_notifications(
-            PENDING_NOTIFICATION_LIMIT
+            PENDING_NOTIFICATION_LIMIT, site=site
         ):
             if rule_id not in enabled:
                 continue
@@ -1185,7 +1189,7 @@ class AlertService:
                     window.describe(),
                 )
                 continue
-            deal = self.repository.get_deal(deal_id)
+            deal = self.repository.get_deal(deal_id, site=site)
             if deal is None:
                 # Without the stored deal there is nothing to render; the row
                 # stays pending instead of being marked as delivered.
@@ -1197,6 +1201,12 @@ class AlertService:
                 continue
             sent += self._deliver(rule_id, deal, window=window)
         return sent
+
+    def _service_site(self):
+        """Return the provider site whose pending rows this service drains."""
+        provider = self.feed or self.client
+        config = getattr(provider, "site_config", None)
+        return getattr(config, "name", "chollometro")
 
     def _active_rules_with_dates(self):
         """Enabled rules with the creation date and text that name their alerts."""

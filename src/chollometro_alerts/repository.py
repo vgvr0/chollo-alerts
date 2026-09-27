@@ -52,6 +52,12 @@ class _CompatConnection(sqlite3.Connection):
         ):
             sql = "INSERT INTO feed_threads(thread_id,published_at,first_seen_at,site) VALUES (?,?,?,?)"
             parameters = (*parameters, DEFAULT_SITE)
+        elif (
+            normalized.startswith("insert into feed_state values")
+            and len(parameters) == 3
+        ):
+            sql = "INSERT INTO feed_state(key,value,updated_at,site) VALUES (?,?,?,?)"
+            parameters = (*parameters, DEFAULT_SITE)
         return super().execute(sql, parameters)
 
 
@@ -152,6 +158,17 @@ class DealRepository:
             return db
 
     def _initialize(self, db):
+        db.execute("SAVEPOINT repository_initialize")
+        try:
+            self._initialize_impl(db)
+            db.execute("RELEASE SAVEPOINT repository_initialize")
+            db.commit()
+        except Exception:
+            db.execute("ROLLBACK TO SAVEPOINT repository_initialize")
+            db.execute("RELEASE SAVEPOINT repository_initialize")
+            raise
+
+    def _initialize_impl(self, db):
         current_schema = db.execute("PRAGMA user_version").fetchone()[0]
         db.execute("""CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,7 +316,8 @@ class DealRepository:
             PRIMARY KEY (site, thread_id)
         )""")
         db.execute("""CREATE TABLE IF NOT EXISTS feed_state (
-            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+            key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL,
+            site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, key)
         )""")
         db.execute("""CREATE TABLE IF NOT EXISTS runtime_status (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -343,6 +361,9 @@ class DealRepository:
             "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_thread_time ON deal_temperature_snapshots(thread_id, observed_at)"
         )
         db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_temperature_snapshots_site_thread_time ON deal_temperature_snapshots(site, thread_id, observed_at)"
+        )
+        db.execute(
             "CREATE INDEX IF NOT EXISTS idx_deals_site_recent ON deals(site, published_at, first_seen_at)"
         )
         db.execute(
@@ -364,7 +385,6 @@ class DealRepository:
             db, legacy_ownership_schema=legacy_ownership_schema
         )
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        db.commit()
 
     def _migrate_site_aware(self, db):
         """Upgrade legacy deal identity tables atomically and idempotently."""
@@ -420,6 +440,13 @@ class DealRepository:
                     thread_id TEXT NOT NULL, published_at TEXT, first_seen_at TEXT NOT NULL,
                     site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, thread_id))""",
                     "thread_id,published_at,first_seen_at",
+                ),
+                (
+                    "feed_state",
+                    """CREATE TABLE feed_state_new (
+                    key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    site TEXT NOT NULL DEFAULT 'chollometro', PRIMARY KEY (site, key))""",
+                    "key,value,updated_at",
                 ),
                 (
                     "deal_temperature_snapshots",
@@ -1294,29 +1321,29 @@ class DealRepository:
         ).fetchone()
         return row[0] if row and row[0] else None
 
-    def feed_state(self, key):
+    def feed_state(self, key, site=DEFAULT_SITE):
         row = self.db.execute(
-            "SELECT value FROM feed_state WHERE key=?", (key,)
+            "SELECT value FROM feed_state WHERE site=? AND key=?", (site, key)
         ).fetchone()
         return row[0] if row else None
 
-    def set_feed_state(self, key, value):
+    def set_feed_state(self, key, value, site=DEFAULT_SITE):
         now = datetime.now(UTC).isoformat()
         self.db.execute(
-            """INSERT INTO feed_state(key,value,updated_at) VALUES (?,?,?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+            """INSERT INTO feed_state(key,value,updated_at,site) VALUES (?,?,?,?)
+            ON CONFLICT(site,key) DO UPDATE SET value=excluded.value,
             updated_at=excluded.updated_at""",
-            (key, value, now),
+            (key, value, now, site),
         )
         self.db.commit()
 
-    def feed_is_initialized(self):
+    def feed_is_initialized(self, site=DEFAULT_SITE):
         """False until the first discovery cycle snapshotted the current feed."""
-        return self.feed_state(FEED_BOOTSTRAP_KEY) is not None
+        return self.feed_state(FEED_BOOTSTRAP_KEY, site) is not None
 
-    def mark_feed_initialized(self, at=None):
+    def mark_feed_initialized(self, at=None, site=DEFAULT_SITE):
         self.set_feed_state(
-            FEED_BOOTSTRAP_KEY, as_utc(at or datetime.now(UTC)).isoformat()
+            FEED_BOOTSTRAP_KEY, as_utc(at or datetime.now(UTC)).isoformat(), site
         )
 
     def seen_feed_thread_ids(self, thread_ids=None, site=DEFAULT_SITE):
@@ -1342,14 +1369,16 @@ class DealRepository:
             seen.update(row[0] for row in rows)
         return seen
 
-    def feed_thread_count(self):
+    def feed_thread_count(self, site=DEFAULT_SITE):
         """How many distinct threads the feed store already knows about.
 
         The discovery cycle uses it as the guard of the "no overlap" risk
         signal: a window that overlaps nothing only means something when there
         is a history to overlap with.
         """
-        row = self.db.execute("SELECT COUNT(*) FROM feed_threads").fetchone()
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM feed_threads WHERE site=?", (site,)
+        ).fetchone()
         return row[0] if row else 0
 
     def record_feed_threads(self, deals, *, at=None):
@@ -1375,16 +1404,16 @@ class DealRepository:
         self.db.commit()
         return cur.rowcount
 
-    def feed_watermark(self):
+    def feed_watermark(self, site=DEFAULT_SITE):
         """Newest `published_at` of the previous cycle, or None."""
-        return as_utc(self.feed_state(FEED_WATERMARK_KEY))
+        return as_utc(self.feed_state(FEED_WATERMARK_KEY, site))
 
-    def set_feed_watermark(self, published_at):
+    def set_feed_watermark(self, published_at, site=DEFAULT_SITE):
         if published_at is None:
             return
-        self.set_feed_state(FEED_WATERMARK_KEY, as_utc(published_at).isoformat())
+        self.set_feed_state(FEED_WATERMARK_KEY, as_utc(published_at).isoformat(), site)
 
-    def pending_rule_notifications(self, limit=50):
+    def pending_rule_notifications(self, limit=50, site=DEFAULT_SITE):
         """Matched (rule, deal) pairs awaiting Telegram, oldest first.
 
         These are the rows a Telegram failure leaves behind: the match is
@@ -1393,7 +1422,9 @@ class DealRepository:
         """
         return [
             (rule_id, deal_id)
-            for rule_id, deal_id, _reason in self.pending_notification_rows(limit)
+            for rule_id, deal_id, _reason in self.pending_notification_rows(
+                limit, site=site
+            )
         ]
 
     def pending_notification_rows(self, limit=50, site=DEFAULT_SITE):
@@ -1525,9 +1556,10 @@ class DealRepository:
         ).fetchone()
         return row[0] if row else None
 
-    def rule_observations(self, rule_id):
+    def rule_observations(self, rule_id, site=DEFAULT_SITE):
         return self.db.execute(
-            "SELECT * FROM rule_deal_observations WHERE rule_id=?", (rule_id,)
+            "SELECT * FROM rule_deal_observations WHERE site=? AND rule_id=?",
+            (site, rule_id),
         ).fetchall()
 
     def get_rule_observation(self, rule_id, deal_id, site=DEFAULT_SITE):
