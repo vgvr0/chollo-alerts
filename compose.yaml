@@ -21,7 +21,7 @@ services:
     <<: *app
     command: ["chollo-alerts", "scan"]
     ports:
-      - "8000:8000"
+      - "${METRICS_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "chollo-alerts", "health"]
       interval: 60s
@@ -29,5 +29,19 @@ services:
       start_period: 60s
       retries: 3
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - scanner
+
 volumes:
   chollometro-data:
+  prometheus-data:

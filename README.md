@@ -549,6 +549,12 @@ and configure Prometheus to scrape `/metrics`. `METRICS_PORT` controls the
 listening port. The endpoints are read-only and expose no credentials or
 alert contents.
 
+The Docker Compose stack includes a Prometheus service. Start it with
+`docker compose up -d`; the application metrics are scraped from
+`scanner:8000/metrics`, and the Prometheus UI/API is available on
+`http://localhost:9090`. The default Compose setup uses port 8000 inside the
+network and `${METRICS_PORT:-8000}` on the host.
+
 The Prometheus surface includes run, deal, alert-match, notification,
 notification-failure, last-scan, last-success, run-duration and active-alert
 metrics. It also includes LLM request, failure, duration and provider-reported
