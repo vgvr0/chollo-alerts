@@ -9,6 +9,7 @@ import requests
 
 from .alert_text import deterministic_price_alert, merge_intent
 from .errors import ChollometroError
+from .i18n import DEFAULT_LANGUAGE, LANGUAGE_NAMES, Translator
 from .intent import AlertIntent, intent_to_rule, notification_window, validate_intent
 from .intent_router import (
     alert_candidates,
@@ -321,11 +322,13 @@ class TelegramRuleController:
         multiuser_enabled=False,
         auto_register=False,
         alert_nlp_mode="hybrid",
+        i18n=None,
     ):
         self.url = f"https://api.telegram.org/bot{bot_token}"
         self.authorized_chat_id = str(authorized_chat_id)
         self.repository = repository
         self.translator = translator
+        self.i18n = i18n or Translator()
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
@@ -340,6 +343,8 @@ class TelegramRuleController:
         self.last_interpretation_method = None
         self.last_llm_success = None
         self.current_user_id = None
+        self.current_language_user_id = None
+        self.current_language = DEFAULT_LANGUAGE
         self.current_chat_id = self.authorized_chat_id
         self.user_resolver = TelegramUserResolver(
             repository,
@@ -358,9 +363,7 @@ class TelegramRuleController:
         if chat_type is not None and chat_type != "private":
             self.current_chat_id = str(chat.get("id", self.authorized_chat_id))
             if self.multiuser_enabled:
-                self.send_message(
-                    "🤖 Este bot está disponible únicamente por chat privado."
-                )
+                self.send_message(self._t("error.private_chat_only"))
             return None
         if self.multiuser_enabled and not TelegramUserResolver.is_allowed_chat(update):
             return None
@@ -376,11 +379,11 @@ class TelegramRuleController:
             self.current_chat_id = str(
                 message.get("chat", {}).get("id", self.authorized_chat_id)
             )
-            self.send_message(
-                "⛔ No tienes acceso a este bot. Pide al administrador que te registre."
-            )
+            self.send_message(self._t("error.access_denied"))
             return None
         self.current_user_id = user.id if self.multiuser_enabled else None
+        self.current_language_user_id = user.id
+        self.current_language = user.language
         self.current_chat_id = str(
             message.get("chat", {}).get("id", self.authorized_chat_id)
         )
@@ -409,6 +412,31 @@ class TelegramRuleController:
             raise
         return reply
 
+    def _t(self, key, **values):
+        return self.i18n.t(key, locale=self.current_language, **values)
+
+    def _handle_language_command(self, text):
+        match = re.fullmatch(r"/language(?:@\w+)?(?:\s+([\w-]+))?", text, re.IGNORECASE)
+        if not match:
+            return None
+        requested = match.group(1)
+        if requested is None:
+            return self._t(
+                "language.current",
+                language=LANGUAGE_NAMES.get(
+                    self.current_language, self.current_language
+                ),
+            )
+        language = self.i18n.normalize_language(requested)
+        if not self.i18n.is_supported(language):
+            return self._t("language.unsupported", requested=requested)
+        user_id = self.current_language_user_id
+        if user_id is None:
+            return self._t("language.usage")
+        self.repository.update_user_language(user_id, language)
+        self.current_language = language
+        return self._t("language.changed", language=LANGUAGE_NAMES[language])
+
     def _reply_to(self, text):
         """Answer one message: manage the stored alerts, or create a new one.
 
@@ -417,6 +445,9 @@ class TelegramRuleController:
         category: it needs the alert it refers to), and an update reuses the
         stored alert instead of building a second one from the sentence.
         """
+        language_reply = self._handle_language_command(text)
+        if language_reply is not None:
+            return language_reply
         operation = classify_alert_operation(text)
         if operation == "CAPABILITY_QUESTION":
             return (

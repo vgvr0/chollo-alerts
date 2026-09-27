@@ -26,6 +26,19 @@ enough.
 
 ## 💬 Natural-language alerts
 
+### Idiomas
+
+La interfaz de Telegram admite `es` (Español, idioma predeterminado) y `en`
+(English). Usa `/language` para consultar el idioma actual y `/language es` o
+`/language en` para cambiarlo; la preferencia se guarda por usuario. El idioma
+de la interfaz es independiente de `PEPPER_SITE`: cambiar el site no cambia el
+idioma ni traduce títulos, descripciones, tiendas o nombres de productos de
+los deals.
+
+Para añadir un locale, registra su código en `SUPPORTED_LANGUAGES`, añade su
+catálogo JSON bajo `src/chollometro_alerts/i18n/locales/` y completa las mismas
+claves que el catálogo español. La lógica de negocio no necesita cambios.
+
 These are examples of alert sentences supported by the current parser and rule engine:
 
 ```text

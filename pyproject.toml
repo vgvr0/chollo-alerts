@@ -37,6 +37,9 @@ chollo-alerts = "chollometro_alerts.cli:main"
 pythonpath = ["src"]
 markers = ["live: opt-in network contract checks"]
 
+[tool.setuptools.package-data]
+chollometro_alerts = ["i18n/locales/*.json"]
+
 [tool.coverage.run]
 source = ["src/chollometro_alerts"]
 

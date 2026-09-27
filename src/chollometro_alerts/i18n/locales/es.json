@@ -1,0 +1,8 @@
+{
+  "language.current": "Idioma actual: {language}\n\nIdiomas disponibles:\n- es — Español\n- en — English",
+  "language.changed": "Idioma cambiado a {language}.",
+  "language.unsupported": "Idioma no soportado: {requested}. Idiomas disponibles: es, en.",
+  "language.usage": "Uso: /language es o /language en.",
+  "error.private_chat_only": "🤖 Este bot está disponible únicamente por chat privado.",
+  "error.access_denied": "⛔ No tienes acceso a este bot. Pide al administrador que te registre."
+}

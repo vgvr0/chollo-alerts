@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from .alert_rule import AlertConstraints, AlertRule
+from .i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
 from .intent import AlertIntent
 from .models import Deal, User
 from .product import product_tokens
@@ -178,8 +179,14 @@ class DealRepository:
             first_name TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            language TEXT NOT NULL DEFAULT 'es'
         )""")
+        user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        if "language" not in user_columns:
+            db.execute(
+                "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'es'"
+            )
         db.execute("""CREATE TABLE IF NOT EXISTS deals (
             deal_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
             price TEXT, merchant TEXT, temperature INTEGER, category TEXT NOT NULL,
@@ -571,7 +578,7 @@ class DealRepository:
 
     def user_for_id(self, user_id):
         row = self.db.execute(
-            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at FROM users WHERE id=?",
+            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at,language FROM users WHERE id=?",
             (user_id,),
         ).fetchone()
         return (
@@ -584,6 +591,7 @@ class DealRepository:
                 bool(row[5]),
                 as_utc(row[6]),
                 as_utc(row[7]),
+                row[8] if row[8] in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
             )
             if row
             else None
@@ -591,7 +599,7 @@ class DealRepository:
 
     def user_for_telegram_id(self, telegram_user_id):
         return self.db.execute(
-            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at FROM users WHERE telegram_user_id=?",
+            "SELECT id,telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at,language FROM users WHERE telegram_user_id=?",
             (str(telegram_user_id),),
         ).fetchone()
 
@@ -615,10 +623,11 @@ class DealRepository:
         username=None,
         first_name=None,
         enabled=True,
+        language=DEFAULT_LANGUAGE,
     ):
         now = datetime.now(UTC).isoformat()
         cur = self.db.execute(
-            "INSERT INTO users(telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO users(telegram_user_id,telegram_chat_id,username,first_name,enabled,created_at,updated_at,language) VALUES (?,?,?,?,?,?,?,?)",
             (
                 None if telegram_user_id is None else str(telegram_user_id),
                 None if telegram_chat_id is None else str(telegram_chat_id),
@@ -627,10 +636,21 @@ class DealRepository:
                 int(enabled),
                 now,
                 now,
+                language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE,
             ),
         )
         self.db.commit()
         return self.user_for_id(cur.lastrowid)
+
+    def update_user_language(self, user_id, language):
+        if language not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {language}")
+        self.db.execute(
+            "UPDATE users SET language=?,updated_at=? WHERE id=?",
+            (language, datetime.now(UTC).isoformat(), user_id),
+        )
+        self.db.commit()
+        return self.user_for_id(user_id)
 
     def update_user_metadata(self, user_id, identity):
         self.db.execute(
