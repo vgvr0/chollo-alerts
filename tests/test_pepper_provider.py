@@ -10,6 +10,7 @@ from chollometro_alerts.graphql_feed import thread_to_deal
 from chollometro_alerts.pepper import (
     CHOLLOMETRO,
     PEPPER_NL,
+    PEPPER_US,
     PEPPERDEALS_SE,
     PROMODESCUENTOS,
     PepperGraphQLProvider,
@@ -70,6 +71,13 @@ def test_site_config_is_immutable_and_ids_are_site_local():
 def test_provider_uses_site_configuration_without_site_conditionals():
     assert PepperGraphQLProvider(CHOLLOMETRO).site_config is CHOLLOMETRO
     assert PepperGraphQLProvider(PROMODESCUENTOS).base_url == PROMODESCUENTOS.base_url
+
+
+def test_us_provider_selects_isolated_curl_transport():
+    provider = PepperGraphQLProvider(PEPPER_US)
+    assert provider.site_config.transport == "curl_cffi"
+    assert provider.session.impersonate == "chrome"
+    assert provider.endpoint == "https://www.pepperdeals.com/graphql"
 
 
 def test_fixture_timestamp_is_aware_utc():
@@ -144,3 +152,21 @@ def test_same_graphql_transport_runs_against_both_site_configs(site):
     assert len(deals) == 1
     assert session.posts[0][0] == f"{site.base_url}{site.graphql_path}"
     assert deals[0].site == site.name
+
+
+def test_us_headers_include_browser_graphql_headers_and_decoded_xsrf():
+    session = _Session(
+        {"data": {"threads": [load_fixture("pepper_promodescuentos.json")]}}
+    )
+    provider = PepperGraphQLProvider(
+        PEPPER_US,
+        session=session,
+        settings=ChollometroSettings(),
+        feed_settings=GraphQLFeedSettings(window_limit=1),
+    )
+    assert provider.get_recent_deals()
+    sent = session.posts[0][1]["headers"]
+    assert sent["X-XSRF-TOKEN"] == '"TOKEN"'
+    assert sent["x-request-type"] == "application/vnd.pepper.v1+json"
+    assert sent["x-requested-with"] == "XMLHttpRequest"
+    assert sent["x-pepper-txn"] == "threads.index"

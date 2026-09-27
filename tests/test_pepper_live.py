@@ -12,6 +12,7 @@ from chollometro_alerts.pepper import (
     MYDEALZ,
     PEPPER_NL,
     PEPPER_PL,
+    PEPPER_US,
     PEPPERDEALS_SE,
     PREISJAEGER,
     PROMODESCUENTOS,
@@ -22,7 +23,7 @@ pytestmark = pytest.mark.live
 
 
 @pytest.mark.parametrize(
-    "site", [CHOLLOMETRO, PROMODESCUENTOS, PEPPER_NL, PEPPERDEALS_SE]
+    "site", [CHOLLOMETRO, PROMODESCUENTOS, PEPPER_NL, PEPPERDEALS_SE, PEPPER_US]
 )
 def test_live_pepper_graphql_contract(site):
     if os.getenv("RUN_LIVE_TESTS") != "1":
@@ -64,6 +65,7 @@ def test_live_pepper_graphql_contract(site):
         PROMODESCUENTOS,
         PEPPER_NL,
         PEPPERDEALS_SE,
+        PEPPER_US,
     ],
 )
 def test_live_validated_sites_normalize_recent_thread(site):

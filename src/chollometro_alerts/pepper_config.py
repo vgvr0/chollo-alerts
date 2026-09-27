@@ -20,6 +20,9 @@ class PepperSiteConfig:
     search_path: str = "/search"
     group_path: str | None = None
     static_base_url: str | None = None
+    transport: str = "requests"
+    impersonate: str | None = None
+    pepper_txn: str | None = None
 
     @property
     def image_base_url(self) -> str:
@@ -154,6 +157,24 @@ PEPPERDEALS_SE = PepperSiteConfig(
     static_base_url="https://static.pepperdeals.se",
 )
 
+PEPPER_US = PepperSiteConfig(
+    name="pepper_us",
+    base_url="https://www.pepperdeals.com",
+    country="US",
+    locale="en-US",
+    currency="USD",
+    graphql_path="/graphql",
+    recent_path="/",
+    hottest_path="/hot",
+    search_path="/search",
+    deal_path="/deals",
+    group_path="/group",
+    static_base_url="https://static.pepperdeals.com",
+    transport="curl_cffi",
+    impersonate="chrome",
+    pepper_txn="threads.index",
+)
+
 PEPPER_SITES = {
     site.name: site
     for site in (
@@ -166,6 +187,7 @@ PEPPER_SITES = {
         PROMODESCUENTOS,
         PEPPER_NL,
         PEPPERDEALS_SE,
+        PEPPER_US,
     )
 }
 

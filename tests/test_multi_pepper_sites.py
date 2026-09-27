@@ -13,6 +13,7 @@ from chollometro_alerts.pepper import (
     MYDEALZ,
     PEPPER_NL,
     PEPPER_PL,
+    PEPPER_US,
     PEPPERDEALS_SE,
     PREISJAEGER,
     PROMODESCUENTOS,
@@ -145,6 +146,18 @@ FIXTURE = Path(__file__).parent / "fixtures" / "pepper_chollometro.json"
             "/kategorier",
             "https://static.pepperdeals.se",
         ),
+        (
+            PEPPER_US,
+            "US",
+            "en-US",
+            "USD",
+            "/",
+            "/hot",
+            "/search",
+            "/deals",
+            "/group",
+            "https://static.pepperdeals.com",
+        ),
     ],
 )
 def test_validated_site_config(
@@ -179,6 +192,7 @@ def test_validated_site_config(
         "promodescuentos",
         "pepper_nl",
         "pepperdeals_se",
+        "pepper_us",
     ],
 )
 def test_site_selection(name, monkeypatch):
@@ -211,6 +225,7 @@ def test_promodescuentos_live_routes_regression():
         (PROMODESCUENTOS, "MXN"),
         (PEPPER_NL, "€"),
         (PEPPERDEALS_SE, "SEK"),
+        (PEPPER_US, "USD"),
     ],
 )
 def test_provider_normalization_uses_site_currency_and_image_host(site, expected):

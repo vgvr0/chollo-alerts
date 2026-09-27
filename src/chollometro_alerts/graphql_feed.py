@@ -81,6 +81,7 @@ from .errors import (
 from .filters import category_for
 from .models import Deal
 from .pepper_config import CHOLLOMETRO, PepperSiteConfig
+from .pepper_transport import build_session, extra_headers
 
 logger = logging.getLogger(__name__)
 
@@ -333,10 +334,10 @@ class GraphQLFeedClient:
         clock=None,
         session_ttl_seconds=1800,
     ):
+        self.site_config = site_config or CHOLLOMETRO
         self.feed_settings = feed_settings or GraphQLFeedSettings.from_env()
         self.settings = settings or ChollometroSettings.from_env()
-        self.session = session or requests.Session()
-        self.site_config = site_config or CHOLLOMETRO
+        self.session = session or build_session(self.site_config)
         self.base_url = (base_url or self.site_config.base_url).rstrip("/")
         self.home_url = f"{self.base_url}/"
         path = self.site_config.graphql_path or self.feed_settings.path
@@ -352,7 +353,8 @@ class GraphQLFeedClient:
         self.session_ttl_seconds = session_ttl_seconds
         self._sleep = sleep or time.sleep
         self._clock = clock or (lambda: datetime.now(UTC))
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        if self.site_config.transport != "curl_cffi":
+            self.session.headers.update({"User-Agent": USER_AGENT})
         self._session_started_at = None
         self._xsrf_present = False
         # Result of the last fetch: the scanner reads its window metrics.
@@ -580,6 +582,7 @@ class GraphQLFeedClient:
         token = self.session.cookies.get(XSRF_COOKIE)
         if token:
             headers["X-XSRF-TOKEN"] = unquote(token)
+        headers.update(extra_headers(self.site_config))
         return headers
 
     def _ensure_session(self, force=False):
