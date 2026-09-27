@@ -116,12 +116,57 @@ PROMODESCUENTOS = PepperSiteConfig(
     locale="es-MX",
     currency="MXN",
     graphql_path="/graphql",
+    recent_path="/nuevas",
+    hottest_path="/hot",
+    search_path="/search",
     deal_path="/ofertas",
+    group_path="/grupo",
+    static_base_url="https://static.promodescuentos.com",
+)
+
+PEPPER_NL = PepperSiteConfig(
+    name="pepper_nl",
+    base_url="https://nl.pepper.com",
+    country="NL",
+    locale="nl-NL",
+    currency="EUR",
+    graphql_path="/graphql",
+    recent_path="/nieuw",
+    hottest_path="/heet",
+    search_path="/search",
+    deal_path="/aanbiedingen",
+    group_path="/groep",
+    static_base_url="https://static.pepper.com",
+)
+
+PEPPERDEALS_SE = PepperSiteConfig(
+    name="pepperdeals_se",
+    base_url="https://www.pepperdeals.se",
+    country="SE",
+    locale="sv-SE",
+    currency="SEK",
+    graphql_path="/graphql",
+    recent_path="/",
+    hottest_path="/het",
+    search_path="/search",
+    deal_path="/deals",
+    group_path="/kategorier",
+    static_base_url="https://static.pepperdeals.se",
 )
 
 PEPPER_SITES = {
     site.name: site
-    for site in (CHOLLOMETRO, DEALABS, MYDEALZ, HOTUKDEALS, PEPPER_PL, PREISJAEGER)
+    for site in (
+        CHOLLOMETRO,
+        DEALABS,
+        MYDEALZ,
+        HOTUKDEALS,
+        PEPPER_PL,
+        PREISJAEGER,
+        PROMODESCUENTOS,
+        PEPPER_NL,
+        PEPPERDEALS_SE,
+    )
 }
 
 

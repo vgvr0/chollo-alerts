@@ -161,18 +161,26 @@ The scanner uses one configurable Pepper GraphQL provider. Select the site with
 `PEPPER_SITE` (default: `chollometro`); all persisted identities remain scoped
 by `(site, thread_id)`.
 
-| Site | Country | Currency | Status |
-|---|---|---|---|
-| Chollometro | ES | EUR | Supported |
-| Dealabs | FR | EUR | Supported |
-| MyDealz | DE | EUR | Supported |
-| HotUKDeals | GB | GBP | Supported |
-| Pepper.pl | PL | PLN | Supported |
-| Preisjäger | AT | EUR | Supported |
+| Site | Country | Currency | Key | Status |
+|---|---|---|---|---|
+| Chollometro | ES | EUR | `chollometro` | Supported |
+| Dealabs | FR | EUR | `dealabs` | Supported |
+| MyDealz | DE | EUR | `mydealz` | Supported |
+| HotUKDeals | GB | GBP | `hotukdeals` | Supported |
+| Pepper.pl | PL | PLN | `pepper_pl` | Supported |
+| Preisjäger | AT | EUR | `preisjaeger` | Supported |
+| Promodescuentos | MX | MXN | `promodescuentos` | Supported |
+| Pepper Netherlands | NL | EUR | `pepper_nl` | Supported |
+| Pepperdeals Sweden | SE | SEK | `pepperdeals_se` | Supported |
 
 The validated sites share the same provider operations (`threads`, `thread` and
 `searchThreads`). HotUKDeals uses its configured `images.hotukdeals.com`
 image host; prices are never converted between currencies.
+
+Set `PEPPER_SITE` to one of the nine keys in the table above; it defaults to
+`chollometro`. Pepperdeals US is pending / future work: GraphQL is currently
+blocked by a Cloudflare challenge during validation and is not enabled in the
+runtime.
 
 The discovery path is `POST https://www.chollometro.com/graphql`, using the root
 field `threads` (`ChollometroClient` speaks HTML; `GraphQLFeedClient` speaks

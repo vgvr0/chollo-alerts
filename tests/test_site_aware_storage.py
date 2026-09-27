@@ -21,18 +21,26 @@ def deal(site, deal_id="123", price="10"):
         "category",
         datetime.now(UTC),
         site=site,
-        currency="EUR" if site == "chollometro" else "MXN",
+        currency={
+            "chollometro": "EUR",
+            "promodescuentos": "MXN",
+            "pepper_nl": "EUR",
+            "pepperdeals_se": "SEK",
+        }[site],
     )
 
 
 def test_same_id_different_sites_are_independent(tmp_path):
     repository = DealRepository(tmp_path / "sites.db")
     assert repository.upsert(deal("chollometro", price="10"))
-    assert repository.upsert(deal("promodescuentos", price="200"))
-    assert repository.deal_count() == 2
+    for site in ("promodescuentos", "pepper_nl", "pepperdeals_se"):
+        assert repository.upsert(deal(site, price="200"))
+    assert repository.deal_count() == 4
     assert repository.get_deal("123", "chollometro").price == Decimal(10)
     assert repository.get_deal("123", "promodescuentos").price == Decimal(200)
     assert repository.get_deal("123", "promodescuentos").currency == "MXN"
+    assert repository.get_deal("123", "pepper_nl").currency == "EUR"
+    assert repository.get_deal("123", "pepperdeals_se").currency == "SEK"
     assert repository.upsert(deal("chollometro", price="11")) is False
     assert repository.get_deal("123", "chollometro").price == Decimal(10)
 
