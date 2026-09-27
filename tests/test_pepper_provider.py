@@ -9,6 +9,8 @@ from chollometro_alerts.config import ChollometroSettings, GraphQLFeedSettings
 from chollometro_alerts.graphql_feed import thread_to_deal
 from chollometro_alerts.pepper import (
     CHOLLOMETRO,
+    PEPPER_NL,
+    PEPPERDEALS_SE,
     PROMODESCUENTOS,
     PepperGraphQLProvider,
 )
@@ -28,10 +30,14 @@ def load_fixture(name):
     [
         (CHOLLOMETRO, "pepper_chollometro.json", "EUR"),
         (PROMODESCUENTOS, "pepper_promodescuentos.json", "MXN"),
+        (PEPPER_NL, "pepper_promodescuentos.json", "EUR"),
+        (PEPPERDEALS_SE, "pepper_promodescuentos.json", "SEK"),
     ],
 )
 def test_shared_parser_maps_both_pepper_sites(site, fixture, currency):
-    deal = thread_to_deal(load_fixture(fixture), site_config=site)
+    thread = load_fixture(fixture)
+    thread["url"] = f"{site.base_url}{site.deal_path}/example-123"
+    deal = thread_to_deal(thread, site_config=site)
 
     assert deal.site == site.name
     assert deal.currency == currency
@@ -116,7 +122,9 @@ class _Session:
         return _Response(self.payload)
 
 
-@pytest.mark.parametrize("site", [CHOLLOMETRO, PROMODESCUENTOS])
+@pytest.mark.parametrize(
+    "site", [CHOLLOMETRO, PROMODESCUENTOS, PEPPER_NL, PEPPERDEALS_SE]
+)
 def test_same_graphql_transport_runs_against_both_site_configs(site):
     fixture = load_fixture(
         "pepper_chollometro.json"

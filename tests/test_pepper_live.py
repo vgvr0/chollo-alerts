@@ -10,7 +10,9 @@ from chollometro_alerts.pepper import (
     DEALABS,
     HOTUKDEALS,
     MYDEALZ,
+    PEPPER_NL,
     PEPPER_PL,
+    PEPPERDEALS_SE,
     PREISJAEGER,
     PROMODESCUENTOS,
     PepperGraphQLProvider,
@@ -19,7 +21,9 @@ from chollometro_alerts.pepper import (
 pytestmark = pytest.mark.live
 
 
-@pytest.mark.parametrize("site", [CHOLLOMETRO, PROMODESCUENTOS])
+@pytest.mark.parametrize(
+    "site", [CHOLLOMETRO, PROMODESCUENTOS, PEPPER_NL, PEPPERDEALS_SE]
+)
 def test_live_pepper_graphql_contract(site):
     if os.getenv("RUN_LIVE_TESTS") != "1":
         pytest.skip("set RUN_LIVE_TESTS=1 to enable network probes")
@@ -49,7 +53,18 @@ def test_live_pepper_graphql_contract(site):
 
 
 @pytest.mark.parametrize(
-    "site", [CHOLLOMETRO, DEALABS, MYDEALZ, HOTUKDEALS, PEPPER_PL, PREISJAEGER]
+    "site",
+    [
+        CHOLLOMETRO,
+        DEALABS,
+        MYDEALZ,
+        HOTUKDEALS,
+        PEPPER_PL,
+        PREISJAEGER,
+        PROMODESCUENTOS,
+        PEPPER_NL,
+        PEPPERDEALS_SE,
+    ],
 )
 def test_live_validated_sites_normalize_recent_thread(site):
     if os.getenv("RUN_LIVE_TESTS") != "1":
