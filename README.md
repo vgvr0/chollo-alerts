@@ -1,15 +1,15 @@
 # 🛒 Chollo Alerts
 
-> This is an independent open-source project and is not affiliated with or endorsed by Chollometro.
+> This is an independent open-source project and is not affiliated with or endorsed by Chollometro, Pepper or the supported deal sites.
 
-Create deal alerts in natural language and receive matching Chollometro deals
-on Telegram.
+Monitor deals from multiple Pepper sites and create natural-language alerts that
+are evaluated deterministically and delivered on Telegram.
 
-The daemon discovers new deals through Chollometro's **internal GraphQL feed**
-and falls back to public HTML searches when that API cannot be reached. Pricing
-calculations and deal decisions remain deterministic and reproducible; optional
-DeepSeek analysis is used only to extract structured facts when local parsing
-is not enough.
+The daemon discovers new deals through the selected site's **internal GraphQL
+feed** and falls back to public HTML searches when that API cannot be reached.
+Pricing calculations and deal decisions remain deterministic and reproducible;
+optional LLM providers only extract structured facts when local parsing is not
+enough.
 
 [![GitHub Release](https://img.shields.io/github/v/release/vgvr0/chollo-alerts?label=release&sort=semver)](https://github.com/vgvr0/chollo-alerts/releases/tag/v1.0.0)
 [![CI](https://github.com/vgvr0/chollo-alerts/actions/workflows/ci.yml/badge.svg)](https://github.com/vgvr0/chollo-alerts/actions/workflows/ci.yml)
@@ -38,14 +38,14 @@ Avísame de portátiles por menos de 700 € de Amazon pero no AliExpress
 ## ✨ Highlights
 
 * Natural-language Telegram alerts with create, update, list and delete operations
-* Automatic Chollometro monitoring with GraphQL discovery and HTML fallback
-* Total-price, price-per-unit and price-per-liter filters
-* Chollometro temperature, category, age and temperature-momentum filters
-* Merchant allow/exclude filters and per-alert notification windows
-* Deterministic matching with explainable notifications
-* Optional DeepSeek NLP; `LLM_ENABLED=false` keeps the safe default
-* Multi-user Telegram support with persistent SQLite state and extraction cache
-* Docker Compose deployment, bounded retries and failure-aware recovery
+* Multi-site Pepper GraphQL discovery: 10 supported sites, with HTML fallback
+* Site-aware persistence and deterministic matching with explainable notifications
+* Price, price-per-unit, temperature, momentum, category, age and merchant filters
+* Per-alert notification windows and Telegram multi-user routing
+* Optional DeepSeek, OpenAI or Gemini extraction with ordered multi-provider fallback
+* Automatic retention, bounded retries and failure-aware recovery
+* Prometheus metrics, Grafana dashboards, Alertmanager rules and Docker Compose
+* Adaptive polling and bounded gap recovery when explicitly enabled
 
 ## 🚀 Quick Start
 
@@ -72,6 +72,11 @@ docker compose ps
 docker compose exec scanner chollo-alerts health
 ```
 
+With the current Compose stack, local operational UIs are available at
+`http://localhost:9090` (Prometheus), `http://localhost:3000` (Grafana) and
+`http://localhost:9093` (Alertmanager). The scanner exposes `/health/live`,
+`/health/ready` and `/metrics` on `http://localhost:8000`.
+
 The scanner may report `STARTING` until its first completed scan; it should then
 become healthy. See [Configuration](#️-configuration) and
 [Run locally with Docker](#run-locally-with-docker) for the complete settings,
@@ -80,28 +85,42 @@ logs and operational commands.
 ## 🔄 How it works at a glance
 
 ```text
-Telegram alert
-      ↓
-Structured rule
-      ↓
-Chollometro discovery
-      ↓
-Deterministic evaluation
-      ↓
-Match evidence
-      ↓
-Telegram notification
+                  ┌──────────────────────┐
+                  │ Telegram              │
+                  │ Natural-language rule │
+                  └──────────┬───────────┘
+                             ▼
+                  ┌──────────────────────┐
+                  │ Structured alert rule │
+                  └──────────┬───────────┘
+                             ▼
+┌─────────────────────────────────────────────────┐
+│ Pepper provider                                 │
+│ ES · FR · DE · GB · PL · AT · MX · NL · SE · US│
+└──────────────────────┬──────────────────────────┘
+                       ▼
+                Deal normalization
+                       ▼
+             Deterministic evaluation
+                 ┌─────┴─────┐
+                 ▼           ▼
+               Reject      Match ───► Telegram
 ```
 
 ## 📖 Documentation map
 
 * [Telegram alerts and matching](#-example)
+* [Multi-site support](#-graphql-discovery-feed)
+* [Observability](#-observability)
+* [Retention](#-persistence)
+* [LLM providers](#-llm-providers)
 * [Configuration](#️-configuration)
 * [Docker and deployment](#run-locally-with-docker)
 * [GraphQL discovery and HTML fallback](#-graphql-discovery-feed)
 * [Persistence and multi-user behaviour](#-persistence)
 * [Testing and historical replay](#-testing-an-alert-against-historical-deals)
 * [Known limitations](#️-known-limitations)
+* [Project status and roadmap](#-project-status)
 * [Security, contributing and license](#-community-and-legal)
 
 ## 🏗️ How it works
@@ -120,7 +139,7 @@ semantics and do not hide provider problems. The state machine is persisted in
 
 ```mermaid
 flowchart TD
-    A["Chollometro"] --> B["Pepper GraphQL<br/>POST /graphql · root threads<br/>one request per cycle"]
+    A["Selected Pepper site"] --> B["Pepper GraphQL<br/>POST /graphql · root threads<br/>one request per cycle"]
     B --> C["Latest threads<br/>JSON: threadId, publishedAt, price, merchant…"]
     C --> D{"threadId already in feed_threads?"}
     D -- "yes: already observed" --> E["Dropped"]
@@ -130,7 +149,7 @@ flowchart TD
     G -- "pass" --> H{"published_at after<br/>alert.created_at?"}
     H -- "no" --> J["Not notified"]
     H -- "yes" --> I["Deterministic rules<br/>pricing + interest engine"]
-    I --> P["LLM (DeepSeek)<br/>only when the facts are not local"]
+    I --> P["Optional LLM chain<br/>only when facts are not local"]
     P --> K["Match persisted<br/>rule_deal_observations + deal_rule_matches"]
     K --> L{"Inside the alert's<br/>notification window?"}
     L -- "no: pending" --> M["Delivered by a later<br/>cycle inside the window"]
@@ -172,17 +191,33 @@ by `(site, thread_id)`.
 | Promodescuentos | MX | MXN | `promodescuentos` | Supported |
 | Pepper Netherlands | NL | EUR | `pepper_nl` | Supported |
 | Pepperdeals Sweden | SE | SEK | `pepperdeals_se` | Supported |
+| Pepperdeals US | US | USD | `pepper_us` | Supported |
 
 The validated sites share the same provider operations (`threads`, `thread` and
 `searchThreads`). HotUKDeals uses its configured `images.hotukdeals.com`
 image host; prices are never converted between currencies.
 
-Set `PEPPER_SITE` to one of the nine keys in the table above; it defaults to
-`chollometro`. Pepperdeals US is pending / future work: GraphQL is currently
-blocked by a Cloudflare challenge during validation and is not enabled in the
-runtime.
+Set `PEPPER_SITE` to one of the ten keys in the table above; it defaults to
+`chollometro`. `site` and `language` are deliberately separate concepts: this
+release supports multiple sites, not a complete multilingual interface. For
+example:
 
-The discovery path is `POST https://www.chollometro.com/graphql`, using the root
+```dotenv
+PEPPER_SITE=chollometro
+PEPPER_SITE=pepper_us
+```
+
+Persisted identities are scoped by `(site, thread_id)` so equal identifiers from
+different platforms cannot collide.
+
+Pepper US uses a site-specific HTTP transport implemented with `curl_cffi` and
+browser impersonation currently equivalent to Chrome. It performs the required
+session bootstrap and keeps the session cookies/XSRF state in the same way as a
+browser. This special transport is isolated to `pepper_us`; the other sites
+continue using the standard HTTP transport. No cookies, tokens or sessions are
+hardcoded or documented here.
+
+The discovery path is `POST <selected-site>/graphql`, using the root
 field `threads` (`ChollometroClient` speaks HTML; `GraphQLFeedClient` speaks
 this API). One request is sent per cycle, it is never executed once per alert,
 and the HTML provider stays available as the fallback.
@@ -307,6 +342,8 @@ start-up). The names and defaults below are the ones the code really uses
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | Minutes between two operational alerts of the same kind (provider failures, Telegram failures). Must be `>= 1`: the cooldown is what keeps a `503` from turning into alert spam. |
 | `RETENTION_ENABLED` | `true` | Enables the daily cleanup of disposable history. Set to `false` to disable it. |
 | `DEAL_RETENTION_DAYS` | `15` | Retains deals by provider `published_at`; deletes rows strictly older than the UTC cutoff, independent of site. |
+| `RETENTION_FEED_THREADS_DAYS` | `0` | Must remain `0`: feed deduplication state is not independently pruned. Expired deal cascades may remove its related rows. |
+| `RETENTION_OBSERVATIONS_DAYS` | `0` | Must remain `0`: alert observations are not independently pruned. |
 | `RETENTION_SNAPSHOTS_HOURS` | `24` | Temperature snapshot TTL. This preserves the 60-minute momentum window with margin. |
 | `RETENTION_LLM_CACHE_DAYS` | `30` | TTL for the persistent extraction cache, joined to the deal's `first_seen_at`. |
 | `RETENTION_ERROR_HISTORY_DAYS` | `90` | TTL for operational error history. |
@@ -326,10 +363,15 @@ start-up). The names and defaults below are the ones the code really uses
 | `ALERT_TIMEZONE` | `Europe/Madrid` | Default timezone of the per-alert notification windows. An alert that names its own timezone always wins. |
 | `MILK_*`, `BEER_*` | — | Legacy thresholds of the env-configured rules used by `check`, `baseline` and `run-rules --dry-run`. |
 
+### LLM providers
+
 The LLM is optional: `LLM_ENABLED=false` is the safe default, and a fresh
 clone does not need a DeepSeek API key for features that do not use the LLM.
 When enabled, at least one configured provider key is required; missing keys
-are skipped safely. The default remains DeepSeek. A DeepSeek-only setup is:
+are skipped safely. The default remains DeepSeek. The LLM extracts structured
+product facts only; it does not decide whether a deal is good, calculate its
+price, apply merchant inclusion/exclusion, or perform final matching. A
+DeepSeek-only setup is:
 
 ```env
 LLM_ENABLED=true
@@ -615,7 +657,21 @@ The Docker Compose stack includes a Prometheus service. Start it with
 `http://localhost:9090`. The default Compose setup uses port 8000 inside the
 network and `${METRICS_PORT:-8000}` on the host.
 
-### Observabilidad operativa
+## 📊 Observability
+
+```text
+Pepper sites
+     ↓
+  Scanner ──► /health/live
+     │      ├► /health/ready
+     │      └► /metrics
+     │             ↓
+     │         Prometheus
+     │          ├── Grafana
+     │          └── Alertmanager
+```
+
+### Operational stack
 
 `docker compose up -d --build` provisiona Prometheus, Grafana y Alertmanager.
 Grafana está en `http://localhost:${GRAFANA_PORT:-3000}` y carga el datasource
@@ -627,8 +683,10 @@ rellena con los labels existentes en `chollometro_*_by_site`; paneles y alertas
 agrupan por `site` y `provider`, sin enumerar sites concretos. Los labels nunca
 contienen IDs, URLs, títulos, búsquedas ni mensajes de error arbitrarios.
 
-Las alertas cubren target caído, falta prolongada de ejecuciones correctas,
-fallos repetidos por site/provider y tasas elevadas de HTTP 403, 429 o 5xx.
+The configured Prometheus rules are `ScannerDown`, `NoSuccessfulRuns`,
+`FailedExecutions`, `ProviderDown` and `HighHttpErrorRate`. They cover an
+unreachable scanner, prolonged absence of successful runs, repeated failures by
+site/provider, and elevated HTTP 403/429/5xx rates.
 Telegram usa la integración nativa, lee sus credenciales desde `.env` y envía
 también eventos `resolved`; `.env` continúa ignorado por Git.
 
@@ -709,16 +767,20 @@ never evaluated again, whichever provider saw it first.
 
 El daemon ejecuta una limpieza como máximo una vez al día (el momento queda
 guardado en `runtime_status`, por lo que un reinicio no la repite
-innecesariamente). Solo se eliminan históricos prescindibles: snapshots de
-temperatura de más de 24 horas, caché LLM antigua, errores operativos y runs de
-escaneo completados. Las operaciones usan lotes pequeños e índices dedicados.
+innecesariamente). Los deals cuyo `published_at` queda fuera de
+`DEAL_RETENTION_DAYS` (15 días por defecto) se eliminan con sus datos derivados,
+independientemente del site. También se limpian snapshots de temperatura,
+caché LLM, errores operativos y runs de escaneo completados según sus TTL.
+Las operaciones son acotadas por `RETENTION_BATCH_SIZE` y usan transacciones
+cortas.
 
-Nunca se eliminan automáticamente reglas, contexto de usuarios, `feed_threads`,
-deals, matches, observaciones ni notificaciones pendientes. En particular,
-`feed_threads` se conserva indefinidamente porque su existencia es la garantía
-de que un thread antiguo no vuelva a aparecer como nuevo. Los valores por
-defecto son conservadores y no cambian el comportamiento de instalaciones
-existentes.
+No se podan de forma independiente las reglas, el contexto de usuarios, las
+observaciones o el estado `feed_threads`; `RETENTION_FEED_THREADS_DAYS` y
+`RETENTION_OBSERVATIONS_DAYS` deben ser `0`. Sin embargo, cuando un deal expira,
+la limpieza elimina en cascada sus matches, observaciones, extracción y fila de
+`feed_threads` asociada. Así se evita el crecimiento indefinido de los detalles
+de deals sin permitir una poda temporal independiente del estado de deduplicación.
+Los valores por defecto son conservadores y la operación es idempotente.
 
 La limpieza se puede inspeccionar o ejecutar manualmente:
 
@@ -1277,11 +1339,14 @@ Nothing in the product says what "por la noche" means, so the parser refuses to
 invent it: it asks for concrete hours. If a house definition is ever wanted, it
 belongs in the configuration (and the parser), not in a silent guess.
 
-### `feed_threads` is never pruned
+### Retention and deduplication are coupled
 
-One row is kept forever for every thread the feed has ever discovered: there is
-no pruning job. Lookups stay cheap (the lookups go through the primary key), but
-the table only grows.
+`feed_threads` is not independently time-pruned because it supports the
+"already seen" guarantee. When a deal is removed by the 15-day deal-retention
+cascade, however, its related feed row and derived state are removed too. This
+keeps detail tables bounded while making the retention trade-off explicit:
+re-discovery of an expired thread is possible after its deduplication row has
+been removed.
 
 ## 📈 Temperature momentum
 
@@ -1332,8 +1397,8 @@ refusal to invent hours for a vague period.
 
 * `.env` is gitignored; only `.env.example` is versioned. Secrets belong in the
   environment, never in the repository.
-* The Telegram bot token and the DeepSeek API key are credentials: anyone
-  holding them can read your chat or spend your credits.
+* The Telegram bot token and any configured LLM provider API key are credentials:
+  anyone holding them can read your chat or spend your credits.
 * The GraphQL session cookies are never logged, stored or printed: the cookie
   values live in memory for the lifetime of the process and the logs carry
   booleans (`xsrf_present`) only.
@@ -1343,17 +1408,31 @@ refusal to invent hours for a vague period.
 
 ## 📌 Project status
 
-* **GraphQL discovery is implemented and covered by the test suite** (feed
-  client, discovery cycle, window metrics, fallback and explainable
-  notifications): it is the default way of finding new deals, not a future
-  experiment.
-* **HTML is kept, not replaced**: it is the controlled fallback when the
-  GraphQL API fails and the complete behaviour when
-  `CHOLLOMETRO_GRAPHQL_DISCOVERY=false`.
-* **Per-alert shops and notification hours are implemented and covered**:
-  `include_merchants` / `exclude_merchants` are decided deterministically
-  before the LLM, and `notification_window` gates Telegram without ever
-  dropping a match (an alert without a window keeps notifying immediately).
+### Implemented
+
+* Multi-site Pepper support with 10 configured sites, including the isolated
+  Pepper US `curl_cffi` transport.
+* Site-aware SQLite storage and GraphQL discovery with HTML fallback.
+* Deterministic alert evaluation: price, price/unit, temperature, momentum,
+  category, age and merchant filters, plus notification windows.
+* Natural-language Telegram alert CRUD, multi-user routing and explainable
+  notifications.
+* Historical replay, bounded retries, failure-aware recovery and optional gap
+  recovery/adaptive polling.
+* Optional multi-provider LLM extraction with ordered fallback among DeepSeek,
+  OpenAI and Gemini.
+* Automatic retention, Prometheus metrics, Grafana dashboard, Alertmanager
+  rules, Docker Compose deployment and comprehensive offline tests/CI.
+
+### Planned / Roadmap
+
+* 🌍 **Multilingual interface (i18n)**
+
+Multi-site and multi-language are different concepts: deals may come from many
+countries, but the interface and bot do not yet provide a complete i18n layer.
+The planned work is to decouple `site` from `language`, starting with `es` and
+`en`. Deal titles and descriptions will remain in their original language by
+default; automatic translation is not part of the current behavior.
 
 ## 📚 Community and legal
 
