@@ -55,8 +55,8 @@ class Deal:
     currency: str = "EUR"
 
 
-def format_amount(value: Decimal | int | None) -> str:
-    """Spanish money rendering of a price the deal or a rule really carries.
+def format_amount(value: Decimal | int | None, currency: str = "EUR") -> str:
+    """Render the amount using the currency carried by the deal.
 
     Whole amounts stay whole (`15` -> `15 €`) and a fractional one is shown with
     the comma separator and at most two decimals (`7.95` -> `7,95 €`), so the
@@ -64,11 +64,13 @@ def format_amount(value: Decimal | int | None) -> str:
     """
     if value is None:
         return "N/D"
+    symbol = {"EUR": "€", "GBP": "£", "PLN": "zł"}.get(currency, currency)
     value = value if isinstance(value, Decimal) else Decimal(value)
     if value == value.to_integral_value():
-        return f"{format(value.normalize(), 'f')} €"
+        return f"{format(value.normalize(), 'f')} {symbol}"
     rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return f"{rounded:.2f}".replace(".", ",") + " €"
+    separator = "," if currency in {"EUR", "PLN"} else "."
+    return f"{rounded:.2f}".replace(".", separator) + f" {symbol}"
 
 
 def format_number(value: Decimal | float | None) -> str:

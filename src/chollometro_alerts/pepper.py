@@ -6,7 +6,18 @@ separate migration.
 """
 
 from .graphql_feed import GraphQLFeedClient
-from .pepper_config import CHOLLOMETRO, PROMODESCUENTOS, PepperSiteConfig
+from .pepper_config import (
+    CHOLLOMETRO,
+    DEALABS,
+    HOTUKDEALS,
+    MYDEALZ,
+    PEPPER_PL,
+    PEPPER_SITES,
+    PREISJAEGER,
+    PROMODESCUENTOS,
+    PepperSiteConfig,
+    get_pepper_site,
+)
 
 
 class PepperGraphQLProvider(GraphQLFeedClient):
@@ -28,7 +39,14 @@ class PepperGraphQLProvider(GraphQLFeedClient):
 
 __all__ = [
     "CHOLLOMETRO",
+    "DEALABS",
+    "HOTUKDEALS",
+    "MYDEALZ",
+    "PEPPER_PL",
+    "PEPPER_SITES",
+    "PREISJAEGER",
     "PROMODESCUENTOS",
     "PepperGraphQLProvider",
     "PepperSiteConfig",
+    "get_pepper_site",
 ]

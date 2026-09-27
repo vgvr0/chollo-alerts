@@ -235,7 +235,7 @@ class AlertService:
     def recent_deals(self, limit=RECENT_DEALS_DEFAULT_LIMIT):
         """Read the newest persisted deals without scraping, LLM or writes."""
         bounded = min(max(int(limit), 1), RECENT_DEALS_MAX_LIMIT)
-        return self.repository.recent_deals(bounded, site="chollometro")
+        return self.repository.recent_deals(bounded, site=self._service_site())
 
     def run(self, queries, pages=1, rules=None):
         # Static/check mode is kept for compatibility; the daemon never enters

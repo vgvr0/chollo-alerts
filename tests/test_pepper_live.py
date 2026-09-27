@@ -5,7 +5,16 @@ import os
 import pytest
 import requests
 
-from chollometro_alerts.pepper import CHOLLOMETRO, PROMODESCUENTOS
+from chollometro_alerts.pepper import (
+    CHOLLOMETRO,
+    DEALABS,
+    HOTUKDEALS,
+    MYDEALZ,
+    PEPPER_PL,
+    PREISJAEGER,
+    PROMODESCUENTOS,
+    PepperGraphQLProvider,
+)
 
 pytestmark = pytest.mark.live
 
@@ -37,3 +46,21 @@ def test_live_pepper_graphql_contract(site):
         rows[0].get(key) is not None
         for key in ("threadId", "title", "publishedAt", "temperature")
     )
+
+
+@pytest.mark.parametrize(
+    "site", [CHOLLOMETRO, DEALABS, MYDEALZ, HOTUKDEALS, PEPPER_PL, PREISJAEGER]
+)
+def test_live_validated_sites_normalize_recent_thread(site):
+    if os.getenv("RUN_LIVE_TESTS") != "1":
+        pytest.skip("set RUN_LIVE_TESTS=1 to enable network probes")
+
+    provider = PepperGraphQLProvider(site)
+    deals = provider.get_recent_deals()
+    assert deals
+    deal = deals[0]
+    assert deal.site == site.name
+    assert deal.currency == site.currency
+    assert deal.title and deal.deal_id and deal.url.startswith(("http://", "https://"))
+    if deal.image:
+        assert deal.image.startswith(site.image_base_url)

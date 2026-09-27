@@ -26,6 +26,7 @@ from .llm.alert_parser import DeepSeekAlertRuleParser
 from .llm.deepseek import DeepSeekProductExtractor
 from .models import format_number
 from .observability import ObservabilityServer, ObservabilityState
+from .pepper_config import get_pepper_site
 from .product import product_type_matches
 from .replay import (
     DEFAULT_REPLAY_LIMIT,
@@ -141,7 +142,12 @@ def build_feed_client():
     the original per-query HTML behaviour.
     """
     settings = GraphQLFeedSettings.from_env()
-    return GraphQLFeedClient(feed_settings=settings) if settings.enabled else None
+    site = get_pepper_site()
+    return (
+        GraphQLFeedClient(feed_settings=settings, site_config=site)
+        if settings.enabled
+        else None
+    )
 
 
 def build_alert_service(telegram, repository):
@@ -155,8 +161,9 @@ def build_alert_service(telegram, repository):
         if telegram.multiuser_enabled
         else TelegramNotifier(telegram.bot_token, telegram.authorized_chat_id)
     )
+    site = get_pepper_site()
     return AlertService(
-        ChollometroClient(),
+        ChollometroClient(site_config=site),
         repository,
         notifier,
         feed=build_feed_client(),

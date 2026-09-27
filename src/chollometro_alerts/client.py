@@ -9,6 +9,7 @@ records what actually happened in `last_scan`.
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 import requests
@@ -27,6 +28,7 @@ from .errors import (
 )
 from .models import Deal
 from .parser import parse_search_page
+from .pepper_config import CHOLLOMETRO, PepperSiteConfig
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +72,12 @@ class ChollometroClient:
         retries=None,
         settings=None,
         sleep=None,
+        site_config: PepperSiteConfig | None = None,
     ):
         self.settings = settings or ChollometroSettings.from_env()
         self.session = session or requests.Session()
-        self.base_url = base_url.rstrip("/")
+        self.site_config = site_config or CHOLLOMETRO
+        self.base_url = (base_url or self.site_config.base_url).rstrip("/")
         # One timeout per request and one backoff source for the whole client.
         self.timeout = self.settings.timeout if timeout is None else timeout
         self.retries = self.settings.retries if retries is None else retries
@@ -86,7 +90,7 @@ class ChollometroClient:
         self.session.headers.update(
             {"User-Agent": "chollo-alerts/0.1 (+https://www.chollometro.com)"}
         )
-        self.last_search = {}
+        self.last_search: dict[str, Any] = {}
         # Outcome of the last `recent()` batch: SUCCESS, PARTIAL or FAILED.
         self.last_scan: ScanOutcome | None = None
 
@@ -109,7 +113,9 @@ class ChollometroClient:
         provider remains query-based, while GraphQL gap recovery uses this
         endpoint only after a continuity-loss signal.
         """
-        page_result, http_status = self._fetch_page_url("/nuevos", page)
+        page_result, http_status = self._fetch_page_url(
+            self.site_config.recent_path, page
+        )
         self.last_search = {
             "query": "__feed__",
             "page": page,
@@ -171,7 +177,9 @@ class ChollometroClient:
         params: dict[str, str | int] = {"q": query}
         if page > 1:
             params["page"] = page
-        return self._fetch_url(f"/search?{urlencode(params)}", query, page)
+        return self._fetch_url(
+            f"{self.site_config.search_path}?{urlencode(params)}", query, page
+        )
 
     def _fetch_page_url(self, path: str, page: int):
         params = {"page": page} if page > 1 else {}
@@ -185,7 +193,9 @@ class ChollometroClient:
             try:
                 response = self.session.get(url, timeout=self.timeout)
                 response.raise_for_status()
-                return self._parse_page(response, query, page, attempt)
+                return self._parse_page(
+                    response, query, page, attempt, self.site_config
+                )
             except requests.RequestException as exc:
                 error = self._classify(exc, query, page, attempt)
                 # The `as` binding is cleared when the except block ends.
@@ -217,10 +227,10 @@ class ChollometroClient:
         raise AssertionError("retry loop must return or raise")
 
     @staticmethod
-    def _parse_page(response, query, page, attempt):
+    def _parse_page(response, query, page, attempt, site_config=CHOLLOMETRO):
         response.encoding = "utf-8"
         try:
-            page_result = parse_search_page(response.text, query)
+            page_result = parse_search_page(response.text, query, site_config)
         except ChollometroParseError as exc:
             raise ChollometroParseError(
                 f"Chollometro parse error query={query} page={page}: {exc}",

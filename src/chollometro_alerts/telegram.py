@@ -119,7 +119,7 @@ def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
         "",
         deal.title,
         "",
-        f"💰 Precio: {format_amount(deal.price)}",
+        f"💰 Precio: {format_amount(deal.price, deal.currency)}",
         f"🏪 Tienda: {deal.merchant or 'N/D'}",
         f"🔥 Temperatura: {_temperature(deal.temperature)}",
     ]

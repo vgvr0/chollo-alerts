@@ -57,7 +57,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 import requests
 
@@ -265,9 +265,10 @@ def thread_to_deal(
         return None
     thread_id = thread.get("threadId")
     title = (thread.get("title") or "").strip()
-    url = (thread.get("url") or "").strip()
-    if thread_id in (None, "") or not title or not url:
+    raw_url = (thread.get("url") or "").strip()
+    if thread_id in (None, "") or not title or not raw_url:
         return None
+    url = urljoin(f"{site_config.base_url}/", raw_url)
     merchant = thread.get("merchant") or {}
     merchant_name = (merchant.get("merchantName") or "").strip() or None
     description = (thread.get("descriptionPurified") or "").strip()
@@ -570,6 +571,7 @@ class GraphQLFeedClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Accept-Language": self.site_config.locale,
             "Origin": self.base_url,
             "Referer": self.home_url,
         }

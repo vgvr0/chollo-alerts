@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from .errors import ChollometroParseError
 from .filters import category_for
 from .models import Deal
+from .pepper_config import CHOLLOMETRO, PepperSiteConfig
 
 # The item selector the parser understands, and the page shell that proves a
 # real Chollometro search page was served. A 200 response that has neither the
@@ -37,10 +38,11 @@ class SearchPage:
     empty_results: bool
 
 
-def _price(text):
+def _price(text, currency="EUR"):
     if not text:
         return None
-    m = re.search(r"(\d+[,.]\d{1,2})\s*€", text)
+    symbol = {"EUR": "€", "GBP": "£", "PLN": r"zł"}.get(currency, "€")
+    m = re.search(rf"(\d+[,.]\d{{1,2}})\s*{symbol}", text)
     if not m:
         return None
     try:
@@ -74,12 +76,16 @@ def _published(text):
     return datetime.now(UTC) - timedelta(seconds=seconds)
 
 
-def parse_search(html: str, query: str) -> list[Deal]:
+def parse_search(
+    html: str, query: str, site_config: PepperSiteConfig = CHOLLOMETRO
+) -> list[Deal]:
     """Lenient parsing of a search page (pure, no validation of the payload)."""
-    return parse_search_soup(BeautifulSoup(html, "html.parser"), query)
+    return parse_search_soup(BeautifulSoup(html, "html.parser"), query, site_config)
 
 
-def parse_search_soup(soup, query: str) -> list[Deal]:
+def parse_search_soup(
+    soup, query: str, site_config: PepperSiteConfig = CHOLLOMETRO
+) -> list[Deal]:
     deals = []
     for article in soup.select('article[id^="thread_"]'):
         aid = article.get("id", "").removeprefix("thread_")
@@ -120,14 +126,15 @@ def parse_search_soup(soup, query: str) -> list[Deal]:
         price = _price(
             article.select_one(".thread-price").get_text(" ", strip=True)
             if article.select_one(".thread-price")
-            else ""
+            else "",
+            site_config.currency,
         )
         if price is None and data.get("price") is not None:
             price = Decimal(str(data["price"]))
         stamp = article.select_one(".threadListCard-header")
         url = link.get("href", "")
         if url.startswith("/"):
-            url = "https://www.chollometro.com" + url
+            url = site_config.base_url + url
         published = _published(stamp.get_text(" ", strip=True) if stamp else "")
         if published is None and data.get("publishedAt"):
             published = datetime.fromtimestamp(data["publishedAt"], UTC)
@@ -157,12 +164,16 @@ def parse_search_soup(soup, query: str) -> list[Deal]:
                     else None
                 ),
                 source_query=query,
+                site=site_config.name,
+                currency=site_config.currency,
             )
         )
     return deals
 
 
-def parse_search_page(html: str, query: str) -> SearchPage:
+def parse_search_page(
+    html: str, query: str, site_config: PepperSiteConfig = CHOLLOMETRO
+) -> SearchPage:
     """Parse a search response, rejecting payloads that are not a search page.
 
     Raises `ChollometroParseError` when the response cannot be recognised as a
@@ -178,7 +189,7 @@ def parse_search_page(html: str, query: str) -> SearchPage:
         raise ChollometroParseError(
             "unexpected search payload: no result items and no recognized markup"
         )
-    return SearchPage(parse_search_soup(soup, query), items, empty)
+    return SearchPage(parse_search_soup(soup, query, site_config), items, empty)
 
 
 def _is_search_page(soup) -> bool:
