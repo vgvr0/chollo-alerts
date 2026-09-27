@@ -285,10 +285,13 @@ start-up). The names and defaults below are the ones the code really uses
 | `RETENTION_SCAN_HISTORY_DAYS` | `90` | TTL for completed scan history. Failed/incomplete rows are retained until completed. |
 | `RETENTION_BATCH_SIZE` | `500` | Maximum rows deleted per short SQLite transaction. |
 | `RETENTION_INTERVAL_HOURS` | `24` | Minimum interval between automatic maintenance runs; persisted across restarts. |
-| `LLM_ENABLED` | `false` | Enables the DeepSeek extraction fallback. |
-| `LLM_PROVIDER` | `deepseek` | Only supported provider. |
-| `DEEPSEEK_API_KEY` | — | Required when `LLM_ENABLED=true`. |
+| `LLM_ENABLED` | `false` | Enables optional LLM extraction. |
+| `LLM_PROVIDER` | `deepseek` | Legacy single-provider setting, kept for compatibility. |
+| `LLM_PROVIDERS` | — | Ordered chain: `deepseek,openai,gemini`; providers without keys are skipped. |
+| `DEEPSEEK_API_KEY` | — | DeepSeek key; it remains the default provider. |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Model asked for the extraction. |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | — / `gpt-4o-mini` | Optional OpenAI provider. |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-2.0-flash` | Optional Gemini provider. |
 | `DEEPSEEK_TIMEOUT_SECONDS` | `20` | LLM request timeout. |
 | `DEEPSEEK_MAX_RETRIES` | `2` | LLM retry budget. |
 | `TELEGRAM_ALERT_NLP_MODE` | `hybrid` | Telegram alert interpretation mode: `deterministic`, `hybrid` or `llm_first`. |
@@ -297,7 +300,36 @@ start-up). The names and defaults below are the ones the code really uses
 
 The LLM is optional: `LLM_ENABLED=false` is the safe default, and a fresh
 clone does not need a DeepSeek API key for features that do not use the LLM.
-When enabled, `DEEPSEEK_API_KEY` is required. Telegram alert interpretation
+When enabled, at least one configured provider key is required; missing keys
+are skipped safely. The default remains DeepSeek. A DeepSeek-only setup is:
+
+```env
+LLM_ENABLED=true
+DEEPSEEK_API_KEY=your_deepseek_api_key
+```
+
+For DeepSeek → OpenAI fallback:
+
+```env
+LLM_ENABLED=true
+LLM_PROVIDERS=deepseek,openai
+DEEPSEEK_API_KEY=your_deepseek_api_key
+OPENAI_API_KEY=your_openai_api_key
+```
+
+For DeepSeek → Gemini → OpenAI:
+
+```env
+LLM_ENABLED=true
+LLM_PROVIDERS=deepseek,gemini,openai
+DEEPSEEK_API_KEY=your_deepseek_api_key
+GEMINI_API_KEY=your_gemini_api_key
+OPENAI_API_KEY=your_openai_api_key
+```
+
+The chain falls back only for timeouts, network errors, HTTP 429/5xx and
+invalid structured responses. Authentication, configuration and invalid-request
+errors stop immediately. Telegram alert interpretation
 supports three modes: `deterministic` interprets without prioritising the LLM;
 `hybrid` keeps the existing mixed behaviour; and `llm_first` tries the LLM
 first, using the deterministic parser as fallback when the provider fails or

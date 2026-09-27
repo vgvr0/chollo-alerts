@@ -12,16 +12,28 @@ from ..alert_rule import AlertRule
 from ..config import ConfigurationError
 from ..intent import AlertIntent
 from ..product import ProductExtraction, extract_product
+from .base import (
+    LLMRequest,
+    NonRetryableLLMError,
+    RetryableLLMError,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class DeepSeekProductExtractor:
+    name = "deepseek"
     base_url = "https://api.deepseek.com"
     endpoint = f"{base_url}/responses"
 
     def __init__(
-        self, api_key=None, model=None, timeout=None, retries=None, session=None
+        self,
+        api_key=None,
+        model=None,
+        timeout=None,
+        retries=None,
+        session=None,
+        raise_on_failure=False,
     ):
         self.api_key = (api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
         if not self.api_key:
@@ -45,6 +57,7 @@ class DeepSeekProductExtractor:
         if not math.isfinite(self.timeout) or self.timeout <= 0 or self.retries < 0:
             raise ConfigurationError("DeepSeek requiere timeout > 0 y retries >= 0")
         self.session = session or requests.Session()
+        self.raise_on_failure = raise_on_failure
         self.llm_calls = self.llm_failures = self.llm_successes = 0
         self.duration_seconds = 0.0
         self.tokens = 0
@@ -136,6 +149,11 @@ class DeepSeekProductExtractor:
                 if retryable and attempt < self.retries:
                     continue
                 self.llm_failures += 1
+                if self.raise_on_failure:
+                    error_type = (
+                        RetryableLLMError if retryable else NonRetryableLLMError
+                    )
+                    raise error_type(self.last_error.lower(), self.name) from exc
                 return extract_product(product_text)
             self.last_error = None
             self.duration_seconds += perf_counter() - started
@@ -150,6 +168,9 @@ class DeepSeekProductExtractor:
             return result
 
         raise AssertionError("DeepSeek retry loop must return or raise")
+
+    def generate(self, request: LLMRequest) -> ProductExtraction:
+        return self(request.text, deal_id=request.deal_id)
 
     def interpret_alert(self, text: str) -> AlertIntent:
         schema = AlertIntent.model_json_schema()
@@ -319,3 +340,11 @@ class DeepSeekProductExtractor:
             "LLM_REASONING_TOKENS": self.usage["reasoning_tokens"],
             "LLM_TOTAL_TOKENS": self.usage["total_tokens"],
         }
+
+
+class DeepSeekProvider(DeepSeekProductExtractor):
+    """Strict provider adapter used by the fallback chain."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["raise_on_failure"] = True
+        super().__init__(*args, **kwargs)

@@ -69,6 +69,9 @@ class LLMSettings:
     model: str = "deepseek-flash"
     timeout: float = 20
     retries: int = 2
+    providers: tuple[str, ...] = ("deepseek",)
+    provider_keys: tuple[tuple[str, str], ...] = ()
+    provider_models: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_env(cls):
@@ -78,13 +81,28 @@ class LLMSettings:
             raise ConfigurationError("LLM_ENABLED debe ser true o false")
         if enabled == "false":
             return cls()
-        key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-        provider = os.getenv("LLM_PROVIDER", "deepseek").strip().casefold()
-        if provider != "deepseek":
-            raise ConfigurationError(f"LLM_PROVIDER no soportado: {provider}")
-        if not key:
+        legacy_provider = os.getenv("LLM_PROVIDER", "deepseek").strip().casefold()
+        raw_providers = os.getenv("LLM_PROVIDERS", legacy_provider)
+        providers = tuple(
+            dict.fromkeys(
+                x.strip().casefold() for x in raw_providers.split(",") if x.strip()
+            )
+        )
+        supported = {"deepseek", "openai", "gemini"}
+        unknown = [p for p in providers if p not in supported]
+        if unknown:
+            raise ConfigurationError(f"LLM_PROVIDERS no soporta: {', '.join(unknown)}")
+        keys = tuple(
+            (p, os.getenv(f"{p.upper()}_API_KEY", "").strip()) for p in providers
+        )
+        configured = tuple((p, key) for p, key in keys if key)
+        if not configured:
+            if providers == ("deepseek",):
+                raise ConfigurationError(
+                    "DEEPSEEK_API_KEY es obligatoria cuando LLM_ENABLED=true"
+                )
             raise ConfigurationError(
-                "DEEPSEEK_API_KEY es obligatoria cuando LLM_ENABLED=true"
+                "LLM_ENABLED=true pero ningún proveedor configurado tiene API key"
             )
         try:
             timeout = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "20"))
@@ -97,10 +115,37 @@ class LLMSettings:
             raise ConfigurationError(
                 "DEEPSEEK_TIMEOUT_SECONDS debe ser positivo y DEEPSEEK_MAX_RETRIES >= 0"
             )
-        model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
-        if not model:
-            raise ConfigurationError("DEEPSEEK_MODEL no puede estar vacío")
-        return cls(True, provider, key, model, timeout, retries)
+        models = tuple(
+            (
+                p,
+                os.getenv(
+                    f"{p.upper()}_MODEL",
+                    {
+                        "deepseek": "deepseek-flash",
+                        "openai": "gpt-4o-mini",
+                        "gemini": "gemini-2.0-flash",
+                    }[p],
+                ).strip(),
+            )
+            for p in providers
+        )
+        if any(not model for _, model in models):
+            raise ConfigurationError(
+                "El modelo de un proveedor LLM no puede estar vacío"
+            )
+        first_provider, first_key = configured[0]
+        first_model = dict(models)[first_provider]
+        return cls(
+            True,
+            first_provider,
+            first_key,
+            first_model,
+            timeout,
+            retries,
+            providers,
+            configured,
+            models,
+        )
 
 
 def _float(name, default):
