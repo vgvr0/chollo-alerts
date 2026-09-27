@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
@@ -76,6 +77,48 @@ class ObservabilityState:
             "Crawler run duration in seconds.",
             registry=self.registry,
         )
+        self.runs_by_site = Counter(
+            "chollometro_runs_by_site",
+            "Crawler runs by discovered site and provider.",
+            ("status", "site", "provider"),
+            registry=self.registry,
+        )
+        self.deals_by_site = Counter(
+            "chollometro_deals_processed_by_site",
+            "Deals seen by site and provider.",
+            ("site", "provider"),
+            registry=self.registry,
+        )
+        self.matches_by_site = Counter(
+            "chollometro_alert_matches_by_site",
+            "Alert matches by site and provider.",
+            ("site", "provider"),
+            registry=self.registry,
+        )
+        self.notifications_by_site = Counter(
+            "chollometro_notifications_sent_by_site",
+            "Notifications by site and provider.",
+            ("site", "provider"),
+            registry=self.registry,
+        )
+        self.failures_by_site = Counter(
+            "chollometro_notification_failures_by_site",
+            "Notification failures by site and provider.",
+            ("site", "provider"),
+            registry=self.registry,
+        )
+        self.run_duration_by_site = Histogram(
+            "chollometro_run_duration_seconds_by_site",
+            "Crawler run duration by site and provider.",
+            ("site", "provider"),
+            registry=self.registry,
+        )
+        self.http_errors_by_site = Counter(
+            "chollometro_http_errors_by_site",
+            "HTTP errors observed by site, provider and status.",
+            ("site", "provider", "http_status"),
+            registry=self.registry,
+        )
         self.alerts = Gauge(
             "chollometro_active_alerts",
             "Number of currently enabled alert rules.",
@@ -121,7 +164,14 @@ class ObservabilityState:
             self.last_scan.set(timestamp)
 
     def record_run(
-        self, summary, status: str, duration_seconds: float, active_alerts: int
+        self,
+        summary,
+        status: str,
+        duration_seconds: float,
+        active_alerts: int,
+        site: str = "unknown",
+        provider: str = "unknown",
+        http_status: int | None = None,
     ):
         """Record one cycle from the canonical ``RunSummary``."""
         status_label = {
@@ -152,6 +202,19 @@ class ObservabilityState:
             self.llm_duration.observe(
                 max(0.0, float(getattr(summary, "llm_duration_seconds", 0.0)))
             )
+            labels = {"site": site, "provider": provider}
+            self.runs_by_site.labels(status=status_label, **labels).inc()
+            self.deals_by_site.labels(**labels).inc(summary.found)
+            self.matches_by_site.labels(**labels).inc(summary.interesting)
+            self.notifications_by_site.labels(**labels).inc(summary.telegram_sent)
+            self.failures_by_site.labels(**labels).inc(summary.errors)
+            self.run_duration_by_site.labels(**labels).observe(
+                max(0.0, duration_seconds)
+            )
+            if http_status is not None and 400 <= int(http_status) <= 599:
+                self.http_errors_by_site.labels(
+                    site=site, provider=provider, http_status=str(http_status)
+                ).inc()
             if status == "SUCCESS":
                 self.last_success_timestamp = time.time()
                 self.last_success.set(self.last_success_timestamp)
@@ -183,3 +246,13 @@ def _version() -> str:
         return version("chollo-alerts")
     except PackageNotFoundError:  # source checkouts may be uninstalled
         return "unknown"
+
+
+def runtime_site(service) -> str:
+    """Return a stable site label without requiring a site allow-list."""
+    config = getattr(getattr(service, "client", None), "site_config", None)
+    if config is not None and getattr(config, "name", None):
+        return str(config.name)
+    base_url = getattr(getattr(service, "client", None), "base_url", "")
+    host = urlparse(base_url).hostname if base_url else None
+    return (host or "unknown").removeprefix("www.").lower()

@@ -1,0 +1,16 @@
+{
+  "annotations":{"list":[]},"editable":false,"graphTooltip":1,
+  "panels":[
+    {"title":"Target up","type":"stat","gridPos":{"h":4,"w":6,"x":0,"y":0},"targets":[{"expr":"min(up{job=\"chollo-alerts\"})","refId":"A"}]},
+    {"title":"Last successful run","type":"stat","gridPos":{"h":4,"w":6,"x":6,"y":0},"targets":[{"expr":"time() - max(chollometro_last_success_timestamp)","refId":"A"}]},
+    {"title":"Run rate by site/provider","type":"timeseries","gridPos":{"h":8,"w":12,"x":0,"y":4},"targets":[{"expr":"sum by (site, provider, status) (rate(chollometro_runs_by_site{site=~\"$site\"}[5m]))","legendFormat":"{{site}} / {{provider}} / {{status}}","refId":"A"}]},
+    {"title":"Deals throughput by site/provider","type":"timeseries","gridPos":{"h":8,"w":12,"x":12,"y":4},"targets":[{"expr":"sum by (site, provider) (rate(chollometro_deals_processed_by_site{site=~\"$site\"}[5m]))","legendFormat":"{{site}} / {{provider}}","refId":"A"}]},
+    {"title":"HTTP errors by site/provider/status","type":"timeseries","gridPos":{"h":8,"w":12,"x":0,"y":12},"targets":[{"expr":"sum by (site, provider, http_status) (rate(chollometro_http_errors_by_site{site=~\"$site\"}[10m]))","legendFormat":"{{site}} / {{provider}} / {{http_status}}","refId":"A"}]},
+    {"title":"Matches and notifications","type":"timeseries","gridPos":{"h":8,"w":12,"x":12,"y":12},"targets":[{"expr":"sum by (site, provider) (rate(chollometro_alert_matches_by_site{site=~\"$site\"}[5m]))","legendFormat":"matches {{site}} / {{provider}}","refId":"A"},{"expr":"sum by (site, provider) (rate(chollometro_notifications_sent_by_site{site=~\"$site\"}[5m]))","legendFormat":"notifications {{site}} / {{provider}}","refId":"B"}]},
+    {"title":"Run duration","type":"timeseries","gridPos":{"h":8,"w":12,"x":0,"y":20},"targets":[{"expr":"sum by (site, provider) (rate(chollometro_run_duration_seconds_by_site_sum{site=~\"$site\"}[5m])) / clamp_min(sum by (site, provider) (rate(chollometro_run_duration_seconds_by_site_count{site=~\"$site\"}[5m])), 1)","legendFormat":"{{site}} / {{provider}}","refId":"A"}]},
+    {"title":"Active alerts","type":"timeseries","gridPos":{"h":8,"w":12,"x":12,"y":20},"targets":[{"expr":"ALERTS{alertstate=\"firing\"}","legendFormat":"{{alertname}} / {{site}} / {{provider}}","refId":"A"}]}
+  ],
+  "refresh":"30s","schemaVersion":39,"tags":["operations","prometheus","site-aware"],
+  "templating":{"list":[{"name":"site","label":"Site","type":"query","datasource":{"type":"prometheus","uid":"prometheus"},"query":"label_values(chollometro_runs_by_site, site)","includeAll":true,"multi":true,"allValue":".*","refresh":1}]},
+  "time":{"from":"now-6h","to":"now"},"timezone":"browser","title":"Chollo Alerts — Operational","uid":"chollo-alerts-operational","version":1
+}

@@ -587,6 +587,23 @@ The Docker Compose stack includes a Prometheus service. Start it with
 `http://localhost:9090`. The default Compose setup uses port 8000 inside the
 network and `${METRICS_PORT:-8000}` on the host.
 
+### Observabilidad operativa
+
+`docker compose up -d --build` provisiona Prometheus, Grafana y Alertmanager.
+Grafana está en `http://localhost:${GRAFANA_PORT:-3000}` y carga el datasource
+Prometheus y el dashboard **Chollo Alerts — Operational** automáticamente.
+Alertmanager está en `http://localhost:${ALERTMANAGER_PORT:-9093}`.
+
+El dashboard y las reglas son site-aware y dinámicos: la variable `site` se
+rellena con los labels existentes en `chollometro_*_by_site`; paneles y alertas
+agrupan por `site` y `provider`, sin enumerar sites concretos. Los labels nunca
+contienen IDs, URLs, títulos, búsquedas ni mensajes de error arbitrarios.
+
+Las alertas cubren target caído, falta prolongada de ejecuciones correctas,
+fallos repetidos por site/provider y tasas elevadas de HTTP 403, 429 o 5xx.
+Telegram usa la integración nativa, lee sus credenciales desde `.env` y envía
+también eventos `resolved`; `.env` continúa ignorado por Git.
+
 The Prometheus surface includes run, deal, alert-match, notification,
 notification-failure, last-scan, last-success, run-duration and active-alert
 metrics. It also includes LLM request, failure, duration and provider-reported

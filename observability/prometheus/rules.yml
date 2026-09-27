@@ -1,0 +1,40 @@
+groups:
+  - name: chollo-alerts-operational
+    rules:
+      - alert: ScannerDown
+        expr: up{job="chollo-alerts"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Scanner target is down"
+          description: "Prometheus cannot scrape the scanner target for more than five minutes."
+      - alert: NoSuccessfulRuns
+        expr: chollometro_last_success_timestamp > 0 and time() - chollometro_last_success_timestamp > 3600
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "No successful scanner run"
+          description: "No successful run has been recorded for more than one hour."
+      - alert: FailedExecutions
+        expr: sum by (site, provider) (increase(chollometro_runs_by_site{status="failed"}[15m])) >= 3
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Repeated scanner failures for {{ $labels.site }}"
+          description: "{{ $labels.provider }} has recorded at least three failed runs in the last 15 minutes."
+      - alert: ProviderDown
+        expr: sum by (site, provider) (increase(chollometro_runs_by_site{status=~"failed|interrupted"}[15m])) >= 3
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "Provider degraded for {{ $labels.site }}"
+          description: "Provider {{ $labels.provider }} is failing repeatedly while the process may still be alive."
+      - alert: HighHttpErrorRate
+        expr: |
+          (sum by (site, provider) (rate(chollometro_http_errors_by_site{http_status=~"403|429|5.."}[10m])) /
+           clamp_min(sum by (site, provider) (rate(chollometro_runs_by_site[10m])), 1)) > 0.30
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "High HTTP error rate for {{ $labels.site }}"
+          description: "{{ $labels.provider }} is returning 403, 429 or 5xx responses above the 30% threshold."

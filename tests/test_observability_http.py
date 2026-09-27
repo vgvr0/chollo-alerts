@@ -43,7 +43,14 @@ def test_http_health_endpoints_and_metrics():
             {"status": "ready", "database": "ok"},
         )
         state.mark_scan_started()
-        state.record_run(Summary(), "SUCCESS", 1.25, 2)
+        state.record_run(
+            Summary(),
+            "SUCCESS",
+            1.25,
+            2,
+            site="example-site",
+            provider="example-provider",
+        )
         status, health = get(server, "/health")
         assert status == 200
         assert health["last_run"] == {
@@ -62,6 +69,10 @@ def test_http_health_endpoints_and_metrics():
         assert 'chollometro_runs_total{status="completed"} 1.0' in metrics
         assert "chollometro_deals_processed_total 12.0" in metrics
         assert "chollometro_run_duration_seconds_count 1.0" in metrics
+        assert (
+            'chollometro_runs_by_site_total{provider="example-provider",site="example-site",status="completed"} 1.0'
+            in metrics
+        )
         assert "chollometro_llm_requests_total 2.0" in metrics
         assert "chollometro_llm_input_tokens_total 10.0" in metrics
         assert "chollometro_llm_output_tokens_total 4.0" in metrics

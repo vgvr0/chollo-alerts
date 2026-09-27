@@ -5,6 +5,7 @@ import time
 from .adaptive_polling import AdaptivePollingController
 from .config import AdaptivePollingSettings
 from .errors import SCAN_SUCCESS
+from .observability.state import runtime_site
 from .retention import RetentionService
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,16 @@ def run_scanner(service, interval_minutes=10, pages=1, stop_event=None):
                             status,
                             time.monotonic() - started,
                             active_alerts,
+                            site=runtime_site(service),
+                            provider=(
+                                "graphql"
+                                if getattr(service, "last_feed_status", "DISABLED")
+                                in {"OK", "SKIPPED"}
+                                else "html"
+                            ),
+                            http_status=(
+                                getattr(service, "last_scan_stats", None) or {}
+                            ).get("http_status"),
                         )
                         logger.info(
                             "scan.summary status=%s deals_seen=%s alerts_matched=%s "

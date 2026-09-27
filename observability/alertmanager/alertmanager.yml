@@ -1,0 +1,29 @@
+global:
+  resolve_timeout: 5m
+route:
+  group_by: [alertname, site, provider]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: telegram
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /alertmanager/secrets/bot_token
+        chat_id: 1
+        send_resolved: true
+        parse_mode: HTML
+        message: |
+          <b>{{ .Status | toUpper }}</b> — {{ .CommonLabels.alertname }}
+          <b>severity:</b> {{ .CommonLabels.severity }}
+          {{- if .CommonLabels.site }}
+          <b>site:</b> {{ .CommonLabels.site }}
+          {{- end }}
+          {{- if .CommonLabels.provider }}
+          <b>provider:</b> {{ .CommonLabels.provider }}
+          {{- end }}
+          {{ range .Alerts }}
+          <b>summary:</b> {{ .Annotations.summary }}
+          <b>description:</b> {{ .Annotations.description }}
+          <b>started:</b> {{ .StartsAt }}
+          {{ end }}
