@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 # How the persisted price dimension is rendered back to the user. An absolute
 # price is the total price of the deal, so it has no "/unit" suffix at all.
 PRICE_UNIT_LABELS = {"liter": "L", "unit": "ud", "kilogram": "kg"}
+_DEFAULT_I18N = Translator()
+
+
+def _t(key, language=DEFAULT_LANGUAGE, **values):
+    return _DEFAULT_I18N.t(key, locale=language, **values)
 
 
 def _spanish_amount(value) -> str:
@@ -81,7 +86,7 @@ def alert_display_name(rule, fallback: str | None = None) -> str:
     return _display_words(product_name or brand or query)
 
 
-def listing_price_line(constraints) -> str | None:
+def listing_price_line(constraints, language=DEFAULT_LANGUAGE) -> str | None:
     """Render the stored price restriction for the visual alert listing."""
     for value, unit in (
         (constraints.max_price, "absolute"),
@@ -90,27 +95,41 @@ def listing_price_line(constraints) -> str | None:
         (getattr(constraints, "max_price_per_kilogram", None), "kilogram"),
     ):
         if value is not None:
-            return f"💶 Menos de {_spanish_amount(value)} {price_suffix(unit)}"
+            return _t(
+                "rules.price_under",
+                language,
+                amount=_spanish_amount(value),
+                currency=price_suffix(unit),
+            )
     return None
 
 
-def listing_temperature_line(constraints) -> str | None:
+def listing_temperature_line(constraints, language=DEFAULT_LANGUAGE) -> str | None:
     minimum = constraints.temperature_min
     maximum = constraints.temperature_max
     if minimum is not None and maximum is not None:
-        return f"🔥 Temperatura: {degrees(minimum)}–{degrees(maximum)}"
+        return _t(
+            "rules.temperature",
+            language,
+            value=f"{degrees(minimum)}–{degrees(maximum)}",
+        )
     if minimum is not None:
-        return f"🔥 Temperatura mínima: {degrees(minimum)}"
+        return _t("rules.temperature_min", language, value=degrees(minimum))
     if maximum is not None:
-        return f"🔥 Temperatura máxima: {degrees(maximum)}"
+        return _t("rules.temperature_max", language, value=degrees(maximum))
     return None
 
 
-def legacy_listing_price(row) -> str:
+def legacy_listing_price(row, language=DEFAULT_LANGUAGE) -> str:
     """Render the legacy price column when canonical resolution is unavailable."""
     if row[4] in (None, "", "None"):
-        return "sin precio"
-    return f"Menos de {_spanish_amount(row[4])} {price_suffix(row[5])}"
+        return _t("rules.no_price", language)
+    return _t(
+        "rules.price_under",
+        language,
+        amount=_spanish_amount(row[4]),
+        currency=price_suffix(row[5]),
+    )
 
 
 def listing_identity(row, rule) -> str:
@@ -125,54 +144,78 @@ def listing_identity(row, rule) -> str:
     return f"#{row[0]} · {alert_display_name(display_rule, row[1])}"
 
 
-def format_listing_line(row, rule) -> str:
+def format_listing_line(row, rule, language=DEFAULT_LANGUAGE) -> str:
     """Render one alert for every read-only listing surface."""
     lines = [f"{'✅' if row[6] else '⏸️'} {listing_identity(row, rule)}"]
     if rule is None:
-        lines.append(f"💶 {legacy_listing_price(row)}")
+        lines.append(f"💶 {legacy_listing_price(row, language)}")
         return "\n".join(lines)
     # A partially repaired structured row may still have useful identity in
     # the legacy columns. Use it for display only; never write it back.
     display_rule = (
         rule.model_copy(update={"brand": row[3]}) if not rule.brand and row[3] else rule
     )
-    price = listing_price_line(display_rule.constraints)
+    price = listing_price_line(display_rule.constraints, language)
     if price:
         lines.append(price)
-    temperature = listing_temperature_line(display_rule.constraints)
+    temperature = listing_temperature_line(display_rule.constraints, language)
     if temperature:
         lines.append(temperature)
     if display_rule.constraints.category_include:
         lines.append(
-            f"🗂️ Categoría: {', '.join(display_rule.constraints.category_include)}"
+            _t(
+                "rules.category",
+                language,
+                value=", ".join(display_rule.constraints.category_include),
+            )
         )
     if display_rule.constraints.category_exclude:
         lines.append(
-            f"🚫 Categoría: {', '.join(display_rule.constraints.category_exclude)}"
+            _t(
+                "rules.category_excluded",
+                language,
+                value=", ".join(display_rule.constraints.category_exclude),
+            )
         )
     if display_rule.constraints.max_age_minutes is not None:
         lines.append(
-            f"🕒 Máximo {format_number(display_rule.constraints.max_age_minutes)} min de antigüedad"
+            _t(
+                "rules.age",
+                language,
+                value=format_number(display_rule.constraints.max_age_minutes),
+            )
         )
     if not price and not temperature:
-        lines.append("🔎 Cualquier oferta nueva")
+        lines.append(_t("rules.any_new", language))
     if display_rule.include_merchants:
-        lines.append(f"🏪 {', '.join(display_rule.include_merchants)}")
+        lines.append(
+            _t(
+                "rules.merchants",
+                language,
+                value=", ".join(display_rule.include_merchants),
+            )
+        )
     if display_rule.exclude_merchants:
-        lines.append(f"🚫 {', '.join(display_rule.exclude_merchants)}")
+        lines.append(
+            _t(
+                "rules.excluded",
+                language,
+                value=", ".join(display_rule.exclude_merchants),
+            )
+        )
     return "\n".join(lines)
 
 
-def listing_summary(active, inactive) -> str:
-    active_word = "alerta activa" if active == 1 else "alertas activas"
-    inactive_word = "inactiva" if inactive == 1 else "inactivas"
-    return f"{active} {active_word} · {inactive} {inactive_word}"
+def listing_summary(active, inactive, language=DEFAULT_LANGUAGE) -> str:
+    active_word = _t("rules.active_summary", language, count=active)
+    inactive_word = _t("rules.inactive_summary", language, count=inactive)
+    return f"{active_word} · {inactive} {inactive_word}"
 
 
-def format_alert_list(rows, rule_loader) -> str:
+def format_alert_list(rows, rule_loader, language=DEFAULT_LANGUAGE) -> str:
     """Render the canonical alert list for Telegram and the CLI."""
     if not rows:
-        return "🔔 Tus alertas\n\nNo tienes alertas configuradas."
+        return _t("rules.none", language)
     resolved_rows = []
     for row in rows:
         try:
@@ -180,21 +223,24 @@ def format_alert_list(rows, rule_loader) -> str:
         except (ValueError, TypeError):
             rule = None
         resolved_rows.append((row, rule))
-    blocks = [format_listing_line(row, rule) for row, rule in resolved_rows]
+    blocks = [format_listing_line(row, rule, language) for row, rule in resolved_rows]
     active = sum(bool(row[6]) for row in rows)
     inactive = len(rows) - active
     result = (
-        "🔔 Tus alertas\n\n"
+        _t("rules.header", language)
+        + "\n\n"
         + "\n\n".join(blocks)
         + "\n\n"
-        + listing_summary(active, inactive)
+        + listing_summary(active, inactive, language)
     )
     if inactive:
-        label = "Inactiva" if inactive == 1 else "Inactivas"
+        label = _t("rules.inactive_label", language, count=inactive)
         inactive_names = [
             listing_identity(row, rule) for row, rule in resolved_rows if not row[6]
         ]
-        result += f"\n⏸️ {label}: {', '.join(inactive_names)}"
+        result += "\n" + _t(
+            "rules.inactive", language, label=label, value=", ".join(inactive_names)
+        )
     return result
 
 
@@ -208,18 +254,23 @@ def degrees(value) -> str:
     return f"{format_number(value)}°"
 
 
-def temperature_condition(minimum, maximum) -> str | None:
+def temperature_condition(minimum, maximum, language=DEFAULT_LANGUAGE) -> str | None:
     """How the temperature window of an alert reads: None when it has none."""
     if minimum is None and maximum is None:
         return None
     if minimum is not None and maximum is not None:
-        return f"entre {degrees(minimum)} y {degrees(maximum)}"
+        return _t(
+            "rules.temperature_condition_between",
+            language,
+            minimum=degrees(minimum),
+            maximum=degrees(maximum),
+        )
     if minimum is not None:
-        return f"al menos {degrees(minimum)}"
-    return f"como máximo {degrees(maximum)}"
+        return _t("rules.temperature_condition_min", language, minimum=degrees(minimum))
+    return _t("rules.temperature_condition_max", language, maximum=degrees(maximum))
 
 
-def rule_price_text(rule) -> str:
+def rule_price_text(rule, language=DEFAULT_LANGUAGE) -> str:
     """The price condition a stored alert carries, as it reads back.
 
     An alert may also have no price at all (its condition is a temperature),
@@ -234,10 +285,10 @@ def rule_price_text(rule) -> str:
         if value is not None:
             amount = f"{float(value):.2f}".replace(".", ",")
             return f"< {amount} {price_suffix(unit)}"
-    return "sin precio"
+    return _t("rules.no_price", language)
 
 
-def alert_detail_lines(intent) -> list[str]:
+def alert_detail_lines(intent, language=DEFAULT_LANGUAGE) -> list[str]:
     """The shops and the schedule a created alert really stores.
 
     Both are shown back to the operator so the confirmation says what the alert
@@ -245,30 +296,52 @@ def alert_detail_lines(intent) -> list[str]:
     it is not lost.
     """
     lines = []
-    temperature = temperature_condition(intent.temperature_min, intent.temperature_max)
+    temperature = temperature_condition(
+        intent.temperature_min, intent.temperature_max, language
+    )
     if temperature:
-        lines.append(f"🌡️ Temperatura: {temperature}")
+        lines.append(_t("rules.detail_temperature", language, value=temperature))
     if getattr(intent, "category_include", None):
-        lines.append(f"🗂️ Categorías: {', '.join(intent.category_include)}")
+        lines.append(
+            _t(
+                "rules.detail_categories",
+                language,
+                value=", ".join(intent.category_include),
+            )
+        )
     if getattr(intent, "category_exclude", None):
-        lines.append(f"🚫 Sin categorías: {', '.join(intent.category_exclude)}")
+        lines.append(
+            _t(
+                "rules.detail_excluded_categories",
+                language,
+                value=", ".join(intent.category_exclude),
+            )
+        )
     if getattr(intent, "max_age_minutes", None) is not None:
         lines.append(
-            f"🕒 Antigüedad máxima: {format_number(intent.max_age_minutes)} min"
+            _t(
+                "rules.detail_age",
+                language,
+                value=format_number(intent.max_age_minutes),
+            )
         )
     if intent.include_merchants or intent.exclude_merchants:
-        shops = ", ".join(intent.include_merchants or ("cualquier tienda",))
+        shops = ", ".join(
+            intent.include_merchants or (_t("rules.any_store", language),)
+        )
         if intent.exclude_merchants:
-            shops += f" (excepto {', '.join(intent.exclude_merchants)})"
-        lines.append(f"🏪 Tiendas: {shops}")
+            shops += (
+                " ("
+                + _t(
+                    "rules.except", language, value=", ".join(intent.exclude_merchants)
+                )
+                + ")"
+            )
+        lines.append(_t("rules.detail_merchants", language, value=shops))
     window = notification_window(intent)
     if window is not None:
         stamp = f"{window.start:%H:%M}–{window.end:%H:%M} {window.timezone}"
-        lines.append(
-            f"⏱️ Avisos: {stamp}. Los chollos que aparezcan fuera "
-            "de ese horario no se pierden: quedan pendientes y se envían al "
-            "abrirse la ventana."
-        )
+        lines.append(_t("rules.detail_schedule", language, stamp=stamp))
     return lines
 
 
@@ -282,11 +355,13 @@ def _recent_deal_datetime(value: datetime | None) -> str | None:
     return f"{local:%d/%m/%Y %H:%M}"
 
 
-def format_recent_deals(deals: list[Deal] | tuple[Deal, ...]) -> str:
+def format_recent_deals(
+    deals: list[Deal] | tuple[Deal, ...], language=DEFAULT_LANGUAGE
+) -> str:
     """Render persisted deals compactly for a Telegram read-only response."""
     if not deals:
-        return "No hay chollos persistidos todavía."
-    lines = ["🆕 Últimos chollos", ""]
+        return _t("deals.none", language)
+    lines = [_t("deals.latest_header", language), ""]
     for index, deal in enumerate(deals, start=1):
         details = [deal.title]
         if deal.price is not None:
@@ -298,7 +373,7 @@ def format_recent_deals(deals: list[Deal] | tuple[Deal, ...]) -> str:
         lines.append(f"{index}. " + " — ".join(details))
         published = _recent_deal_datetime(deal.published_at)
         if published is not None:
-            lines.append(f"🕒 {published}")
+            lines.append(_t("deals.published_time", language, value=published))
         if deal.url:
             lines.append(deal.url)
         if index != len(deals):
@@ -394,15 +469,15 @@ class TelegramRuleController:
             try:
                 reply = self._reply_to(text)
             except ValueError as exc:
-                reply = f"Necesito una aclaración: {exc}"
+                error = (
+                    self._t("errors.empty_alert")
+                    if str(exc) == "errors.empty_alert"
+                    else str(exc)
+                )
+                reply = self._t("errors.clarification", error=error)
             except ChollometroError as exc:
                 # Never answer "alerta creada, 0 ofertas" when Chollometro failed.
-                reply = (
-                    f"⚠️ No he podido consultar Chollometro ahora mismo "
-                    f"({exc.error_type}). La alerta no se ha activado y no se ha "
-                    "guardado ninguna referencia. Vuelve a enviar el mensaje para "
-                    "reintentarlo."
-                )
+                reply = self._t("errors.provider", error_type=exc.error_type)
                 logger.warning("alert_baseline_failed error_type=%s", exc.error_type)
             self.send_message(reply)
         except Exception:
@@ -450,10 +525,7 @@ class TelegramRuleController:
             return language_reply
         operation = classify_alert_operation(text)
         if operation == "CAPABILITY_QUESTION":
-            return (
-                "✅ Sí. Puedo crear alertas por temperatura de Chollometro, "
-                "por ejemplo: «Quiero alertas si la temperatura es mayor a 300»."
-            )
+            return self._t("help.capability")
         if operation == "RECENT_DEALS":
             return self._handle_recent_deals(text)
         if operation == "LIST_ALERTS":
@@ -478,7 +550,7 @@ class TelegramRuleController:
             from .service import AlertService
 
             service = AlertService(None, self.repository, None)
-        return format_recent_deals(service.recent_deals(limit))
+        return format_recent_deals(service.recent_deals(limit), self.current_language)
 
     def _handle_create_or_unknown(self, text):
         """Interpret and persist a creation without changing the rule engine."""
@@ -572,9 +644,7 @@ class TelegramRuleController:
             return validate_intent(deterministic)
         if self.alert_nlp_mode == "deterministic":
             self._record_interpretation("deterministic", llm_success=False)
-            raise ValueError(
-                "No he podido identificar una alerta completa con el parser determinista"
-            )
+            raise ValueError(self._t("errors.parser"))
         if self.translator is not None:
             try:
                 candidate = merge_intent(self.translator.interpret_alert(text), text)
@@ -608,10 +678,7 @@ class TelegramRuleController:
             self._record_interpretation("fallback", llm_success=False)
             return validate_intent(deterministic)
         self._record_interpretation("fallback", llm_success=False)
-        raise ValueError(
-            "No he podido identificar un producto o categoría suficientemente "
-            "concreto; indica qué quieres vigilar"
-        )
+        raise ValueError(self._t("errors.vague_alert"))
 
     def _record_interpretation(self, method, *, llm_success):
         self.last_interpretation_method = method
@@ -645,7 +712,7 @@ class TelegramRuleController:
                 candidate.rule_id, user_id=self.current_user_id
             )
             self._clear_remembered()
-            return f"🗑️ Alerta eliminada: {self._alert_label(candidate)}"
+            return self._t("rules.deleted", label=self._alert_label(candidate))
         if resolution.status == "ambiguous":
             self._remember_alerts([item.rule_id for item in resolution.matches])
             return self._ambiguous_reply("eliminar", resolution.matches)
@@ -655,10 +722,7 @@ class TelegramRuleController:
         """Change only the properties the sentence asks for, on the stored alert."""
         reference = read_alert_reference(text, "UPDATE_ALERT")
         if not reference.has_change:
-            return (
-                "🤔 Dime qué quieres cambiar de esa alerta, por ejemplo "
-                "«cambia 200 a 150 €» o «quita el límite de 200 €»."
-            )
+            return self._t("rules.update_usage")
         resolution = self._resolve(reference)
         if resolution.status == "unique":
             candidate = resolution.match
@@ -668,7 +732,7 @@ class TelegramRuleController:
                     candidate.rule_id, rule, text, user_id=self.current_user_id
                 )
             except ValueError as exc:
-                return f"⚠️ No he podido actualizarla: {exc}."
+                return self._t("rules.update_error", error=exc)
             self._remember_alerts([candidate.rule_id])
             return self._format(self._intent_from_rule(rule, "update"), [])
         if resolution.status == "ambiguous":
@@ -688,37 +752,24 @@ class TelegramRuleController:
             else ()
         )
 
-    @staticmethod
-    def _alert_label(candidate):
+    def _alert_label(self, candidate):
         return (
             f"#{candidate.rule_id} — {candidate.rule.query} — "
-            f"{rule_price_text(candidate.rule)}"
+            f"{rule_price_text(candidate.rule, self.current_language)}"
         )
 
-    @staticmethod
-    def _ambiguous_reply(verb, candidates):
+    def _ambiguous_reply(self, verb, candidates):
         listed = "\n".join(
-            f"#{item.rule_id} — {item.rule.query} — {rule_price_text(item.rule)}"
+            f"#{item.rule_id} — {item.rule.query} — {rule_price_text(item.rule, self.current_language)}"
             for item in candidates
         )
-        example = f"«Elimina la alerta #{candidates[0].rule_id}»"
-        return (
-            f"🔎 He encontrado varias alertas que podrían ser esa. "
-            f"¿Cuál quieres {verb}?\n\n{listed}\n\n"
-            f"Respóndeme con su número (por ejemplo {example}) o con más detalle."
-        )
+        example = self._t("rules.delete_example", id=candidates[0].rule_id)
+        return self._t("rules.ambiguous", verb=verb, listed=listed, example=example)
 
-    @staticmethod
-    def _missing_alert_reply(status):
+    def _missing_alert_reply(self, status):
         if status == "context_required":
-            return (
-                "🤔 No sé a qué alerta te refieres. Dime su número (#1) o "
-                "descríbela; con «qué alertas tengo» te las enseño."
-            )
-        return (
-            "🤔 No he encontrado ninguna alerta que coincida con esa "
-            "descripción. Con «qué alertas tengo» te enseño las que tienes."
-        )
+            return self._t("rules.context_required")
+        return self._t("rules.not_found")
 
     @staticmethod
     def _intent_from_rule(rule, action):
@@ -836,52 +887,72 @@ class TelegramRuleController:
 
     def _format(self, intent, rows, baseline_count=None):
         if intent.action == "list":
-            return format_alert_list(rows, self._stored_rule)
-        verb = {
-            "create": "Alerta creada",
-            "update": "Alerta actualizada",
-            "delete": "Alerta eliminada",
-            "enable": "Alerta activada",
-            "disable": "Alerta desactivada",
-        }[intent.action]
+            return format_alert_list(rows, self._stored_rule, self.current_language)
+        verb = self._t(f"rules.action_{intent.action}")
         subject = (
-            intent.query or intent.product_type or intent.brand or "cualquier chollo"
+            intent.query
+            or intent.product_type
+            or intent.brand
+            or self._t("rules.any_deal")
         )
         if intent.action in {"create", "update"}:
             conditions = []
             if intent.max_price is not None:
                 limit = f"{intent.max_price:.2f}".replace(".", ",")
                 conditions.append(
-                    f"por debajo de {limit} {price_suffix(intent.price_unit)}"
+                    self._t(
+                        "rules.condition_price",
+                        amount=limit,
+                        currency=price_suffix(intent.price_unit),
+                    )
                 )
             temperature = temperature_condition(
-                intent.temperature_min, intent.temperature_max
+                intent.temperature_min, intent.temperature_max, self.current_language
             )
             if temperature:
                 # With a price, "… y al menos 250°" completes the sentence; on
                 # its own, it needs the preposition the price condition gave it.
-                conditions.append(temperature if conditions else f"con {temperature}")
+                conditions.append(
+                    temperature
+                    if conditions
+                    else self._t("rules.with_temperature", value=temperature)
+                )
             if intent.category_include:
-                conditions.append(f"de {', '.join(intent.category_include)}")
+                conditions.append(
+                    self._t(
+                        "rules.condition_category",
+                        value=", ".join(intent.category_include),
+                    )
+                )
             if intent.category_exclude:
-                conditions.append(f"excepto {', '.join(intent.category_exclude)}")
+                conditions.append(
+                    self._t(
+                        "rules.condition_excluded_category",
+                        value=", ".join(intent.category_exclude),
+                    )
+                )
             if intent.max_age_minutes is not None:
                 conditions.append(
-                    f"publicado hace menos de {format_number(intent.max_age_minutes)} min"
+                    self._t(
+                        "rules.condition_age",
+                        value=format_number(intent.max_age_minutes),
+                    )
                 )
-            reply = f"✅ {verb}: {subject}"
+            reply = self._t(
+                "rules.action_result", icon="✅", verb=verb, subject=subject
+            )
             if conditions:
-                reply += " " + " y ".join(conditions)
+                reply += " " + self._t("rules.condition_join").join(conditions)
             elif intent.action == "create":
-                reply += "\n🔎 Cualquier oferta nueva relevante"
-            details = alert_detail_lines(intent)
+                reply += "\n" + self._t("rules.new_relevant")
+            details = alert_detail_lines(intent, self.current_language)
             if details:
                 reply += "\n" + "\n".join(details)
             if baseline_count is not None and intent.action == "create":
-                reply += f"\n🔎 {baseline_count} ofertas actuales guardadas como referencia.\nTe avisaré de las nuevas que cumplan la condición."
+                reply += "\n" + self._t("rules.baseline", count=baseline_count)
             return reply
         icon = {"delete": "🗑️", "disable": "⏸️", "enable": "▶️"}[intent.action]
-        return f"{icon} {verb}: {subject}"
+        return self._t("rules.action_result", icon=icon, verb=verb, subject=subject)
 
     def _listing_line(self, row):
         """One stored alert as Telegram lists it, read through its own rule.

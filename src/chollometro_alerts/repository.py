@@ -743,6 +743,13 @@ class DealRepository:
         ).fetchone()
         return row[0] if row and row[0] else None
 
+    def language_for_rule(self, rule_id):
+        row = self.db.execute(
+            "SELECT u.language FROM alert_rules r LEFT JOIN users u ON u.id=r.user_id WHERE r.id=?",
+            (rule_id,),
+        ).fetchone()
+        return row[0] if row and row[0] else DEFAULT_LANGUAGE
+
     def close(self):
         """Close the calling thread's connection (the safe SQLite ownership boundary)."""
         self.close_current_thread()

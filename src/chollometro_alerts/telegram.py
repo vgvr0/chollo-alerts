@@ -5,10 +5,12 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .evaluation import MatchEvidence
+from .i18n import DEFAULT_LANGUAGE, Translator
 from .models import Deal, format_amount
 from .schedule import as_aware_utc, default_timezone
 
 TRANSIENT_TELEGRAM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+_I18N = Translator()
 
 
 def _retry_after(response):
@@ -74,7 +76,9 @@ class TelegramNotifier:
             self.url,
             json={
                 "chat_id": chat_id,
-                "text": format_message(deal, evidence),
+                "text": format_message(
+                    deal, evidence, self._language_for_rule(rule_id)
+                ),
                 "disable_web_page_preview": False,
             },
             timeout=self.timeout,
@@ -82,6 +86,12 @@ class TelegramNotifier:
             backoff=self.backoff,
             sleep=self._sleep,
         )
+
+    def _language_for_rule(self, rule_id):
+        if self.repository is None or rule_id is None:
+            return DEFAULT_LANGUAGE
+        resolver = getattr(self.repository, "language_for_rule", None)
+        return resolver(rule_id) if resolver is not None else DEFAULT_LANGUAGE
 
     def send_system_alert(self, error_type, component, message, run_id):
         from datetime import UTC, datetime
@@ -92,11 +102,17 @@ class TelegramNotifier:
         )
 
 
-def _temperature(value) -> str:
-    return f"{value}°" if value is not None else "N/D"
+def _temperature(value, language=DEFAULT_LANGUAGE) -> str:
+    return (
+        f"{value}°"
+        if value is not None
+        else _I18N.t("deals.not_available", locale=language)
+    )
 
 
-def _published_label(published_at: datetime | None) -> str | None:
+def _published_label(
+    published_at: datetime | None, language=DEFAULT_LANGUAGE
+) -> str | None:
     """Render the provider publication instant in the app's local timezone."""
     if published_at is None:
         return None
@@ -104,10 +120,12 @@ def _published_label(published_at: datetime | None) -> str | None:
         local = as_aware_utc(published_at).astimezone(ZoneInfo(default_timezone()))
     except (TypeError, ValueError):
         return None
-    return f"🕒 Publicado: {local:%H:%M}"
+    return _I18N.t("deals.published", locale=language, value=f"{local:%H:%M}")
 
 
-def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
+def format_message(
+    deal: Deal, evidence: MatchEvidence | None = None, language=DEFAULT_LANGUAGE
+) -> str:
     """The Telegram message: the deal, the alert that matched and why.
 
     Without evidence the message still names the deal; the alert and the
@@ -115,28 +133,36 @@ def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
     values it really compared. `deal.category` is never used to explain a match.
     """
     lines = [
-        "🔔 Chollo encontrado",
+        _I18N.t("deals.found", locale=language),
         "",
         deal.title,
         "",
-        f"💰 Precio: {format_amount(deal.price, deal.currency)}",
-        f"🏪 Tienda: {deal.merchant or 'N/D'}",
-        f"🔥 Temperatura: {_temperature(deal.temperature)}",
+        _I18N.t(
+            "deals.price",
+            locale=language,
+            value=format_amount(deal.price, deal.currency),
+        ),
+        _I18N.t("deals.store", locale=language, value=deal.merchant or "N/D"),
+        _I18N.t(
+            "deals.temperature",
+            locale=language,
+            value=_temperature(deal.temperature, language),
+        ),
     ]
-    published_label = _published_label(deal.published_at)
+    published_label = _published_label(deal.published_at, language)
     if published_label is not None:
         lines.append(published_label)
     if evidence is not None:
         alert = (evidence.alert_text or evidence.query).strip()
         if alert:
-            lines += ["", "🎯 Alerta:", f'"{alert}"']
+            lines += ["", _I18N.t("deals.alert", locale=language), f'"{alert}"']
         if evidence.checks:
-            lines += ["", "✅ Cumple:"]
+            lines += ["", _I18N.t("deals.matches", locale=language)]
             lines += [f"• {check.label}: {check.detail}" for check in evidence.checks]
         if evidence.semantic_reason:
             lines += [
                 "",
-                "🤖 Coincidencia semántica:",
+                _I18N.t("deals.semantic", locale=language),
                 f'"{evidence.semantic_reason}"',
             ]
         if evidence.momentum is not None:
@@ -145,20 +171,32 @@ def format_message(deal: Deal, evidence: MatchEvidence | None = None) -> str:
             age = momentum.get("age_minutes")
             lines += [
                 "",
-                "📈 Momentum:",
+                _I18N.t("deals.momentum", locale=language),
                 (
-                    f"• Crecimiento {momentum.get('window_minutes')} min: {velocity:+.2f} °/min"
+                    _I18N.t(
+                        "deals.growth",
+                        locale=language,
+                        minutes=momentum.get("window_minutes"),
+                        velocity=velocity,
+                    )
                     if velocity is not None
-                    else "• Crecimiento: N/D"
+                    else _I18N.t("deals.growth_unknown", locale=language)
                 ),
                 (
-                    f"• Edad del chollo: {age:.0f} min"
+                    _I18N.t("deals.age", locale=language, value=f"{age:.0f}")
                     if age is not None
-                    else "• Edad del chollo: N/D"
+                    else _I18N.t("deals.age_unknown", locale=language)
                 ),
-                f"• Motivo: temperatura creciendo por encima de {momentum.get('minimum_velocity')} °/min",
+                _I18N.t(
+                    "deals.reason",
+                    locale=language,
+                    value=momentum.get("minimum_velocity"),
+                ),
             ]
-        lines += ["", f"🧠 Evaluación: {evidence.method}"]
+        lines += [
+            "",
+            _I18N.t("deals.evaluation", locale=language, value=evidence.method),
+        ]
     lines += ["", deal.url]
     return "\n".join(lines)
 

@@ -18,7 +18,7 @@ class DeepSeekAlertRuleParser:
 
     def parse(self, text: str) -> AlertRule:
         if not text or not text.strip():
-            raise ValueError("La alerta no puede estar vacía")
+            raise ValueError("errors.empty_alert")
         # The shops and the notification window of the sentence are read
         # deterministically and merged into the provider's answer.
         return merge_rule(self.client.interpret_alert_rule(text), text)

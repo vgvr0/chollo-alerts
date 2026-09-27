@@ -38,6 +38,8 @@ class Translator:
         if text is None:
             return key
         try:
+            if "|" in text and "count" in values:
+                text = text.split("|", 1)[0 if values["count"] == 1 else 1]
             return text.format(**values)
         except (KeyError, IndexError, ValueError):
             return text
