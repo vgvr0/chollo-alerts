@@ -26,26 +26,25 @@ enough.
 
 ## 💬 Natural-language alerts
 
-### Idiomas
+### Languages
 
-La interfaz de Telegram admite `es` (Español, idioma predeterminado) y `en`
-(English). Usa `/language` para consultar el idioma actual y `/language es` o
-`/language en` para cambiarlo; la preferencia se guarda por usuario. El idioma
-de la interfaz es independiente de `PEPPER_SITE`: cambiar el site no cambia el
-idioma ni traduce títulos, descripciones, tiendas o nombres de productos de
-los deals.
+The Telegram interface supports `es` (Spanish, the default language) and `en`
+(English). Use `/language` to check the current language and `/language es` or
+`/language en` to change it; the preference is stored per user. The interface
+language is independent of `PEPPER_SITE`: changing the site does not change the
+language or translate deal titles, descriptions, merchants or product names.
 
-Para añadir un locale, registra su código en `SUPPORTED_LANGUAGES`, añade su
-catálogo JSON bajo `src/chollometro_alerts/i18n/locales/` y completa las mismas
-claves que el catálogo español. La lógica de negocio no necesita cambios.
+To add a locale, register its code in `SUPPORTED_LANGUAGES`, add its JSON
+catalog under `src/chollometro_alerts/i18n/locales/`, and provide the same keys
+as the Spanish catalog. No business-logic changes are required.
 
 These are examples of alert sentences supported by the current parser and rule engine:
 
 ```text
-Avísame de leche por debajo de 0,80 €/L
-Avísame de zapatillas ASICS por menos de 80 €
-Avísame de cualquier chollo con más de 500°
-Avísame de portátiles por menos de 700 € de Amazon pero no AliExpress
+Notify me about milk below €0.80/L
+Notify me about ASICS shoes under €80
+Notify me about any deal above 500°
+Notify me about laptops under €700 from Amazon but not AliExpress
 Notify me about LEGO Technic deals under €80
 Notify me about robot vacuum cleaners with at least 40% off
 ```
@@ -285,7 +284,7 @@ ordering is never assumed. The initial baseline never starts recovery, and a
 
 ## 🛡️ Chollometro failure handling
 
-**ESCANEO CORRECTO + 0 RESULTADOS ≠ FALLO DE CHOLLOMETRO.** An empty but
+**SUCCESSFUL SCAN + 0 RESULTS ≠ CHOLLOMETRO FAILURE.** An empty but
 complete search is `SUCCESS` with 0 deals; a search that could not be completed is
 `FAILED`. Both states are distinguished in the scanner, in `scan_runs.status`, in
 the logs, in the metrics (`SCAN_STATUS`, `SCAN_ERROR_TYPE`) and in the CLI
@@ -321,7 +320,7 @@ the logs, in the metrics (`SCAN_STATUS`, `SCAN_ERROR_TYPE`) and in the CLI
   daemon waits for the next cycle instead of exiting. Retries inside one scan
   produce at most one operational Telegram alert per logical failure (existing
   60-minute cooldown per error type), so a `503` never becomes alert spam, and no
-  "0 chollos encontrados" message is ever sent for a failure.
+  "0 deals found" message is ever sent for a failure.
 
 ## ⚙️ Configuration
 
@@ -426,16 +425,16 @@ its output does not validate.
 
 ## Run locally with Docker
 
-Esta es la opción recomendada para ejecución continua local. No requiere Render
-ni ningún proveedor cloud.
+This is the recommended option for continuous local execution. It does not
+require Render or any cloud provider.
 
-1. Crea el archivo de configuración y rellena las credenciales:
+1. Create the configuration file and fill in the credentials:
 
    ```powershell
    Copy-Item .env.example .env
    ```
 
-2. Arranca el runtime completo (listener Telegram y scanner separados):
+2. Start the full runtime (separate Telegram listener and scanner):
 
    ```bash
    docker compose up -d --build
@@ -443,18 +442,19 @@ ni ningún proveedor cloud.
    docker compose exec scanner chollo-alerts health
    ```
 
-   Deben aparecer los servicios `telegram` y `scanner`. El scanner debe
-   aparecer como `Up (healthy)` y el health debe devolver `STATUS=HEALTHY`
-   después del primer scan (durante el arranque puede indicar `STARTING`).
+   The `telegram` and `scanner` services should appear. The scanner should
+   show as `Up (healthy)`, and the health command should return
+   `STATUS=HEALTHY` after the first scan (it may report `STARTING` during
+   startup).
 
-3. Consulta los logs:
+3. Check the logs:
 
    ```bash
    docker compose logs -f
    docker compose logs --tail=100
    ```
 
-4. Operación habitual:
+4. Normal operation:
 
    ```bash
    docker compose restart
@@ -463,53 +463,52 @@ ni ningún proveedor cloud.
    docker compose down
    ```
 
-   `docker compose down` detiene y elimina los contenedores, pero conserva el
-   volumen nombrado `chollometro-data`. No uses `docker compose down -v`
-   salvo que quieras eliminar explícitamente los datos de SQLite.
+   `docker compose down` stops and removes the containers but preserves the
+   named `chollometro-data` volume. Do not use `docker compose down -v`
+   unless you explicitly want to delete the SQLite data.
 
-Compose reutiliza la misma imagen para `telegram` (`chollo-alerts
-telegram-listen`) y `scanner` (`chollo-alerts scan`). Ambos usan
-`DATABASE_PATH=/app/data/chollometro.sqlite3` y el volumen persistente
-`chollometro-data:/app/data`, por lo que listener y scanner leen exactamente la
-misma SQLite. Ambos se reinician con `restart: unless-stopped`; solo el scanner
-declara un healthcheck local de progreso, sin tráfico externo adicional.
+Compose reuses the same image for `telegram` (`chollo-alerts telegram-listen`)
+and `scanner` (`chollo-alerts scan`). Both use
+`DATABASE_PATH=/app/data/chollometro.sqlite3` and the persistent
+`chollometro-data:/app/data` volume, so the listener and scanner read exactly
+the same SQLite database. Both restart with `restart: unless-stopped`; only the
+scanner declares a local progress health check, with no additional external
+traffic.
 
-### Backup y restore
+### Backup and restore
 
-El backup usa la API SQLite `backup()` y puede ejecutarse mientras el daemon
-está activo:
+The backup uses SQLite's `backup()` API and can run while the daemon is active:
 
 ```powershell
 python scripts/backup_db.py
 ```
 
-Genera `backups/chollometro-YYYYMMDD-HHMMSS.sqlite3`. Para restaurar, detén el
-servicio, conserva la base actual como copia de seguridad, sustituye la SQLite
-por el backup elegido y vuelve a arrancar:
+It generates `backups/chollometro-YYYYMMDD-HHMMSS.sqlite3`. To restore one,
+stop the service, keep the current database as a safety copy, replace the SQLite
+database with the selected backup, and start the service again:
 
 ```bash
 docker compose stop
-# Sustituir la SQLite del volumen chollometro-data por el backup elegido
+# Replace the SQLite database in the chollometro-data volume with the selected backup
 docker compose start
 docker compose exec scanner chollo-alerts health
 ```
 
-Mantén de forma sencilla entre 7 y 14 backups y elimina los más antiguos sólo
-después de comprobar que los recientes son legibles.
+As a simple retention policy, keep 7 to 14 backups and delete older ones only
+after confirming that the recent backups are readable.
 
-Para que el contenedor se recupere tras cerrar y volver a abrir Docker Desktop,
-Docker Desktop debe estar configurado para iniciar sesión automáticamente y el
-contenedor debe conservar `restart: unless-stopped`. Para el reinicio de
-Windows, activa igualmente `Start Docker Desktop when you sign in`; después
-Docker Desktop recuperará el contenedor y su daemon. Comprueba el resultado con
-`docker compose ps` y `docker compose logs --tail=100`.
+For the container to recover after Docker Desktop is closed and reopened,
+configure Docker Desktop to start automatically and keep
+`restart: unless-stopped` on the container. For Windows restarts, also enable
+`Start Docker Desktop when you sign in`; Docker Desktop will then recover the
+container and its daemon. Verify the result with `docker compose ps` and
+`docker compose logs --tail=100`.
 
-## Deployment cloud opcional
+## Optional cloud deployment
 
-La configuración cloud opcional describe un único Render **Background Worker**
-construido desde el `Dockerfile` de este repositorio. Ejecuta
-`chollo-alerts run` como proceso principal y usa un disco persistente de
-Render de 1 GB montado en `/app/data`.
+The optional cloud configuration describes a single Render **Background Worker**
+built from this repository's `Dockerfile`. It runs `chollo-alerts run` as the
+main process and uses a 1 GB persistent Render disk mounted at `/app/data`.
 
 SQLite is deliberately single-instance: `numInstances: 1` is required, and
 multiple replicas or workers sharing this database are not supported. Render
@@ -544,7 +543,7 @@ consumes `ALERT_TIMEZONE`.
 Create the Render service from the repository Blueprint, review the secret
 fields, and deploy. No public port is needed. Render worker restart behavior is
 managed by the service and the process exit/SIGTERM lifecycle.
-Para ejecución local, usa exclusivamente la sección anterior. El equivalente
+For local execution, use the previous section only. The equivalent
 de comprobación del scanner es:
 
 ```bash
@@ -574,12 +573,13 @@ source .venv/Scripts/activate      # Windows PowerShell: .venv\Scripts\Activate.
 pip install -e .
 ```
 
-`HEALTHY` indica que la base es accesible y el daemon progresa; `DEGRADED`
-indica errores recientes con progreso todavía observable; `UNHEALTHY` indica
-que la base no está disponible o que el scanner lleva demasiado tiempo sin
-terminar. El umbral por defecto es `max(SCAN_INTERVAL_MINUTES * 3, 15)`
-minutos y admite `HEALTH_STALE_AFTER_MINUTES`; el arranque tiene una gracia de
-`max(SCAN_INTERVAL_MINUTES * 2, 5)` minutos.
+`HEALTHY` means the database is reachable and the daemon is making progress;
+`DEGRADED` means there are recent errors but progress is still observable;
+`UNHEALTHY` means the database is unavailable or the scanner has gone too long
+without completing. The default threshold is
+`max(SCAN_INTERVAL_MINUTES * 3, 15)` minutes and can be overridden with
+`HEALTH_STALE_AFTER_MINUTES`; startup has a grace period of
+`max(SCAN_INTERVAL_MINUTES * 2, 5)` minutes.
 
 For the complete development toolchain, install the locked development
 environment from the repository root:
@@ -689,21 +689,24 @@ Pepper sites
 ### Operational stack
 
 `docker compose up -d --build` provisiona Prometheus, Grafana y Alertmanager.
-Grafana está en `http://localhost:${GRAFANA_PORT:-3000}` y carga el datasource
-Prometheus y el dashboard **Chollo Alerts — Operational** automáticamente.
-Alertmanager está en `http://localhost:${ALERTMANAGER_PORT:-9093}`.
+`docker compose up -d --build` provisions Prometheus, Grafana and Alertmanager.
+Grafana is available at `http://localhost:${GRAFANA_PORT:-3000}` and
+automatically loads the Prometheus data source and the **Chollo Alerts —
+Operational** dashboard. Alertmanager is available at
+`http://localhost:${ALERTMANAGER_PORT:-9093}`.
 
-El dashboard y las reglas son site-aware y dinámicos: la variable `site` se
-rellena con los labels existentes en `chollometro_*_by_site`; paneles y alertas
-agrupan por `site` y `provider`, sin enumerar sites concretos. Los labels nunca
+The dashboard and rules are site-aware and dynamic: the `site` variable is
+populated from the labels present in `chollometro_*_by_site`; panels and alerts
+group by `site` and `provider` without enumerating concrete sites. Labels never
+contain IDs, URLs, titles, searches or arbitrary error messages.
 contienen IDs, URLs, títulos, búsquedas ni mensajes de error arbitrarios.
 
 The configured Prometheus rules are `ScannerDown`, `NoSuccessfulRuns`,
 `FailedExecutions`, `ProviderDown` and `HighHttpErrorRate`. They cover an
 unreachable scanner, prolonged absence of successful runs, repeated failures by
 site/provider, and elevated HTTP 403/429/5xx rates.
-Telegram usa la integración nativa, lee sus credenciales desde `.env` y envía
-también eventos `resolved`; `.env` continúa ignorado por Git.
+Telegram uses the native integration, reads its credentials from `.env`, and
+also sends `resolved` events; `.env` remains ignored by Git.
 
 The Prometheus surface includes run, deal, alert-match, notification,
 notification-failure, last-scan, last-success, run-duration and active-alert
@@ -736,31 +739,32 @@ health state are derived from the same per-cycle `RunSummary`.
 Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
 
 ### Telegram multiusuario
+### Telegram multi-user mode
 
-Con `TELEGRAM_MULTIUSER_ENABLED=true`, cada regla guarda `user_id` y las
-operaciones de Telegram se filtran por el usuario estable `from.id`; el
-`chat.id` se conserva como destino de notificación. `username` y `first_name`
-son solo metadatos. Los usuarios desconocidos reciben un rechazo mientras
-`TELEGRAM_AUTO_REGISTER=false` (la política recomendada para una instalación
-cerrada). El comando administrativo `chollo-alerts users` muestra el id,
-destino, estado y número de reglas sin exponer metadatos innecesarios.
-El modo multiusuario acepta únicamente updates cuyo `message.chat.type` sea
-`private`; grupos, supergrupos, canales y tipos desconocidos se rechazan antes
-de resolver identidad, auto-registrar usuarios o ejecutar el LLM.
+With `TELEGRAM_MULTIUSER_ENABLED=true`, each rule stores `user_id` and
+Telegram operations are filtered by the stable `from.id` user identifier;
+`chat.id` is retained as the notification destination. `username` and
+`first_name` are metadata only. Unknown users are rejected while
+`TELEGRAM_AUTO_REGISTER=false` (the recommended policy for a closed
+installation). The administrative `chollo-alerts users` command shows the id,
+destination, status and rule count without exposing unnecessary metadata.
+Multi-user mode only accepts updates whose `message.chat.type` is `private`;
+groups, supergroups, channels and unknown types are rejected before identity
+resolution, auto-registration or LLM execution.
 
-La migración integrada de SQLite crea `legacy/default` usando
-`TELEGRAM_CHAT_ID` y, si existe, `TELEGRAM_USER_ID`, y asigna las reglas
-existentes conservando sus ids y tablas de observaciones/matches. Si no hay
-ninguna identidad configurada, no inventa un usuario: las filas quedan en
-compatibilidad legacy hasta que el operador configure el destino.
+The built-in SQLite migration creates `legacy/default` using
+`TELEGRAM_CHAT_ID` and, when available, `TELEGRAM_USER_ID`, and assigns the
+existing rules while preserving their ids and observation/match tables. If no
+identity is configured, it does not invent a user: rows remain in legacy
+compatibility mode until the operator configures the destination.
 
-La identidad persistida de un deal es `(site, deal_id)`. Los datos históricos
-se migran de forma transaccional con `site='chollometro'`; la extracción,
-observaciones, matches, feed y estado de temperatura mantienen esa misma
-separación. `DEDUP_KEY = (site, deal_id, rule_id)`; como `rule_id` pertenece a
-un usuario, el mismo deal puede notificarse legítimamente a dos usuarios
-distintos. La extracción de producto sigue cacheada por site, deal, fingerprint
-de contenido y versión del extractor.
+A deal's persisted identity is `(site, deal_id)`. Historical data is migrated
+transactionally with `site='chollometro'`; extraction, observations, matches,
+feed state and temperature state keep the same separation.
+`DEDUP_KEY = (site, deal_id, rule_id)`; because `rule_id` belongs to a user,
+the same deal may legitimately be notified to two different users. Product
+extraction remains cached by site, deal, content fingerprint and extractor
+version.
 
 | Table | What it holds |
 | --- | --- |
@@ -779,30 +783,28 @@ de contenido y versión del extractor.
 not evaluated again when it merely reappears. A new lifecycle is opened only
 when the provider proves an inactive-to-active transition.
 
-### Retención y mantenimiento
+### Retention and maintenance
 
-El daemon ejecuta una limpieza como máximo una vez al día (el momento queda
-guardado en `runtime_status`, por lo que un reinicio no la repite
-innecesariamente). Los deals cuyo `published_at` queda fuera de
-`DEAL_RETENTION_DAYS` (15 días por defecto) se eliminan con sus datos derivados,
-independientemente del site. También se limpian snapshots de temperatura,
-caché LLM, errores operativos y runs de escaneo completados según sus TTL.
-Las operaciones son acotadas por `RETENTION_BATCH_SIZE` y usan transacciones
-cortas.
+The daemon runs cleanup at most once per day (the timestamp is stored in
+`runtime_status`, so a restart does not repeat it unnecessarily). Deals whose
+`published_at` falls outside `DEAL_RETENTION_DAYS` (15 days by default) are
+deleted together with their derived data, regardless of site. Temperature
+snapshots, the LLM cache, operational errors and completed scan runs are also
+cleaned according to their TTLs. Operations are bounded by
+`RETENTION_BATCH_SIZE` and use short transactions.
 
-No se podan de forma independiente las reglas, el contexto de usuarios ni las
-identidades históricas. Al expirar un deal, la limpieza elimina en cascada su
-fila de `deals` y los datos dependientes de ese `(site, deal_id)` —extracción,
-matches, observaciones y estado de temperatura—, pero conserva la huella mínima
-de `feed_threads`. Una reaparición sin cambio de estado remoto no notifica de
-nuevo. Cuando el proveedor demuestra `inactivo → activo` (`isExpired=True →
-False`, o un estado equivalente), se crea una nueva vida del deal, se vuelven a
-evaluar las reglas activas y puede enviarse una nueva notificación. El proveedor
-GraphQL actual no ofrece `updated_at`; por eso no se infieren reactivaciones a
-partir de la mera presencia en el feed. Los valores por defecto son
-conservadores y la operación es idempotente.
+Rules, user context and historical identities are not pruned independently.
+When a deal expires, cleanup cascades from its `deals` row to the dependent
+data for that `(site, deal_id)` — extraction, matches, observations and
+temperature state — while preserving the minimal `feed_threads` fingerprint.
+A reappearance without a remote state change does not notify again. When the
+provider proves an `inactive → active` transition (`isExpired=True → False`,
+or an equivalent state), a new lifecycle is created, active rules are evaluated
+again and a new notification may be sent. The current GraphQL provider does not
+expose `updated_at`, so reactivations are not inferred from mere presence in
+the feed. The defaults are conservative and the operation is idempotent.
 
-La limpieza se puede inspeccionar o ejecutar manualmente:
+Cleanup can be inspected or run manually:
 
 ```powershell
 chollo-alerts maintenance status
@@ -810,11 +812,9 @@ chollo-alerts maintenance prune --dry-run
 chollo-alerts maintenance prune
 ```
 
-`--dry-run` solo cuenta candidatos. `maintenance vacuum` ejecuta un `VACUUM`
-explícito para recuperar espacio físico después de borrar filas; no se ejecuta
-automáticamente porque puede bloquear y requiere espacio temporal adicional.
-
-Both additions are **additive and optional**: the new columns and the two new
+`--dry-run` only counts candidates. `maintenance vacuum` runs an explicit
+`VACUUM` to reclaim physical space after deleting rows; it is not run
+automatically because it can block and requires additional temporary space.
 fields of the structured rule are only written when they are used, and a
 database created before them is migrated in place (the `pending_reason` column
 is added by `_initialize()`), so existing alerts keep their exact previous
@@ -825,10 +825,10 @@ behaviour.
 An alert can be as small as:
 
 ```text
-"cerveza"
+"beer"
 ```
 
-The first discovery cycle on a fresh database **initializes the feed state while still evaluating what the alerts can prove to be new**, so a chollo published between the creation of an alert and the first daemon cycle is never lost. Every deal of every cycle goes through the same pipeline:
+The first discovery cycle on a fresh database **initializes the feed state while still evaluating what the alerts can prove to be new**, so a deal published between the creation of an alert and the first daemon cycle is never lost. Every deal of every cycle goes through the same pipeline:
 
 ```text
 New Chollometro thread (threadId not in feed_threads)
@@ -846,43 +846,43 @@ published_at > alert.created_at ?
 
 This makes it possible to monitor products continuously without ever notifying a deal that already existed when the alert was created.
 
-## 🗂️ Categorías y hot deals
+## 🗂️ Categories and hot deals
 
-El feed GraphQL ya devuelve los grupos estructurados del chollo. Esta versión
-usa exactamente `groups.threadGroupId`, `groups.threadGroupName` y
-`groups.threadGroupUrlName`; no clasifica la categoría con el LLM ni hace una
-petición adicional por oferta. También usa `temperature`, `publishedAt`,
-`merchant.merchantName`, `status` e `isExpired` del mismo objeto `thread`.
+The GraphQL feed already returns the deal's structured groups. This version uses
+exactly `groups.threadGroupId`, `groups.threadGroupName` and
+`groups.threadGroupUrlName`; it does not classify categories with the LLM or
+make an additional request per deal. It also uses `temperature`, `publishedAt`,
+`merchant.merchantName`, `status` and `isExpired` from the same `thread`
+object.
 
-Las reglas guardan `constraints.category_include` y
-`constraints.category_exclude`, normalizadas por identificador/slug/nombre, y
-`constraints.max_age_minutes`. Todas son condiciones AND junto con las
-restricciones existentes. Ejemplos de Telegram:
+Rules store `constraints.category_include` and
+`constraints.category_exclude`, normalized by identifier/slug/name, together
+with `constraints.max_age_minutes`. All of them are AND conditions alongside
+the existing constraints. Telegram examples:
 
-* `Avísame de informática con más de 250°`
-* `Cualquier chollo con más de 400°`
-* `Alimentación con más de 150° publicado hace menos de 2 horas`
-* `Solo supermercado`
-* `Nada de moda`
+* `Notify me about computing deals above 250°`
+* `Any deal above 400°`
+* `Food deals above 150° published less than 2 hours ago`
+* `Supermarket only`
+* `No fashion`
 
-Una regla hot deal puede no tener `query`; se asocia a su propio `rule_id` y
-no reutiliza el selector de categoría histórico. La antigüedad se compara con
-`publishedAt` real (UTC); si falta la fecha, no hay match. El baseline inicial
-marca las ofertas actuales como históricas, por lo que crear una alerta no
-notifica ofertas antiguas. El replay explícito sigue permitiendo evaluar el
-histórico local sin enviar Telegram.
+A hot-deal rule may omit `query`; it is associated with its own `rule_id` and
+does not reuse the historical category selector. Age is compared against the
+real `publishedAt` value (UTC); if the timestamp is missing, there is no match.
+The initial baseline marks current deals as historical, so creating an alert
+does not notify old deals. Explicit replay can still evaluate local history
+without sending Telegram.
 
-La ruta GraphQL sigue siendo el proveedor de descubrimiento de una petición por
-ciclo y, si falla, se conserva el fallback HTML. Las categorías estructuradas
-no están disponibles en todas las tarjetas HTML; en ese caso una condición de
-categoría no se puede demostrar y se rechaza de forma segura.
-
+The GraphQL path remains the one-request-per-cycle discovery provider and keeps
+the HTML fallback when it fails. Structured categories are not available on
+every HTML card; in that case a category condition cannot be proven and is
+safely rejected.
 ## 🏪 Shops: allowed and excluded merchants
 
 An alert may name the shops it wants and the ones it refuses:
 
 ```text
-Avísame de portátiles gaming por menos de 1000 € de Amazon o PcComponentes, pero no AliExpress
+Notify me about gaming laptops under €1000 from Amazon or PcComponentes, but not AliExpress
 ```
 
 The rule stores both lists inside the structured alert (`include_merchants` is
@@ -945,7 +945,7 @@ Both timestamps are compared in UTC: `published_at` comes from the provider (`pu
 
 The comparison is **per alert**, never one global date: a deal is eligible for the alerts that already existed when it was published, and invisible to the ones created later.
 
-**First discovery cycle (bootstrap).** On a fresh database the first cycle initializes the state of the feed **and** keeps the deals the alerts can prove to be new. The window is the reference for everything older — those deals only initialize the historical state — but a deal published *after* an alert was created is eligible for that alert and goes through the whole pipeline (temporal gate → filters → extraction → evidence → persistence → Telegram) in this very first cycle. Anything else would silently lose every chollo published between the creation of the alert and the first daemon cycle. After the cycle, the whole window is registered in `feed_threads`, so the next cycle with the same feed evaluates and notifies nothing again.
+**First discovery cycle (bootstrap).** On a fresh database the first cycle initializes the state of the feed **and** keeps the deals the alerts can prove to be new. The window is the reference for everything older — those deals only initialize the historical state — but a deal published *after* an alert was created is eligible for that alert and goes through the whole pipeline (temporal gate → filters → extraction → evidence → persistence → Telegram) in this very first cycle. Anything else would silently lose every deal published between the creation of the alert and the first daemon cycle. After the cycle, the whole window is registered in `feed_threads`, so the next cycle with the same feed evaluates and notifies nothing again.
 
 ```text
 Alert created                10:00
@@ -960,14 +960,14 @@ After the cycle   A B C D  registered as seen
 Second cycle, same feed       0 evaluations, 0 notifications
 ```
 
-### Horario de envío (por alerta)
+### Notification schedule (per alert)
 
 An alert can also choose **when** its messages may be sent:
 
 ```text
-Avísame de portátiles solo entre las 08:00 y las 23:00
-Avísame de portátiles de 22:00 a 07:00
-Avísame de portátiles de 08:00 a 23:00 Europe/Madrid
+Notify me about laptops only between 08:00 and 23:00
+Notify me about laptops from 22:00 to 07:00
+Notify me about laptops from 08:00 to 23:00 Europe/Madrid
 ```
 
 The window is stored per alert (`notification_window`: `start`, `end` and an
@@ -975,14 +975,14 @@ IANA `timezone`) and is **empty by default**: an alert without a window behaves
 exactly as before, notification immediately.
 
 **The window controls Telegram, it never decides the match.** A deal found
-outside the window is still a match, and **no chollo is lost**:
+outside the window is still a match, and **no deal is lost**:
 
 ```text
 03:00  a compatible deal appears
        ↓
        MATCH             (rules, pricing and LLM: all unchanged)
        ↓
-       match persisted   ← the chollo is already safe at this point
+       match persisted   ← the deal is already safe at this point
        ↓
        no Telegram yet: pending_reason = NOTIFICATION_SCHEDULE
        ↓
@@ -1044,13 +1044,13 @@ Each message is built from `MatchEvidence`, which the evaluation engine derives 
 
 * the deal: title, price, merchant, temperature and URL;
 * the alert that produced the match (its stored text, or its query);
-* the conditions that held, one per line (`✅ Cumple:`);
-* the semantic contribution when the model supplied facts the local parser could not (`🤖 Coincidencia semántica`) — facts only, never prompts or internal reasoning;
-* the evaluation method: `deterministic`, `llm` or `hybrid` (`🧠 Evaluación`).
+* the conditions that held, one per line (`✅ Matches:`);
+* the semantic contribution when the model supplied facts the local parser could not (`🤖 Semantic match`) — facts only, never prompts or internal reasoning;
+* the evaluation method: `deterministic`, `llm` or `hybrid` (`🧠 Evaluation`).
 
 The shop is quoted twice when it took part in the decision: as the deal's line
-(`🏪 Tienda: PcComponentes`) and as the condition that was really compared
-(`• Tienda permitida: PcComponentes`, `• Sin tiendas excluidas: AliExpress`).
+(`🏪 Shop: PcComponentes`) and as the condition that was really compared
+(`• Allowed shop: PcComponentes`, `• No excluded shops: AliExpress`).
 When the alert has no merchant lists, no merchant condition is claimed.
 
 The evidence is stored next to the match, so a retried delivery explains the original match again instead of sending a bare deal.
@@ -1075,13 +1075,13 @@ The degrees of a deal are a fact the provider already sends
 the alert only says which values it wants:
 
 ```text
-Avísame de cualquier chollo con más de 500 grados  → temperature_min = 500
-Avísame si supera los 1000°                        → temperature_min = 1000
-Amazon con más de 300 grados                       → temperature_min = 300
-Portátiles por menos de 700 € y al menos 250°      → max_price = 700, temperature_min = 250
-No quiero chollos por debajo de 100 grados         → temperature_min = 100
-menos de 100 grados                                → temperature_max = 100
-entre 100 y 500 grados                             → temperature_min = 100, temperature_max = 500
+Notify me about any deal above 500 degrees         → temperature_min = 500
+Notify me if it goes above 1000°                    → temperature_min = 1000
+Amazon above 300 degrees                            → temperature_min = 300
+Laptops under €700 and at least 250°                → max_price = 700, temperature_min = 250
+I do not want deals below 100 degrees               → temperature_min = 100
+under 100 degrees                                   → temperature_max = 100
+between 100 and 500 degrees                         → temperature_min = 100, temperature_max = 500
 ```
 
 The temperature is one more AND condition of the same `InterestRule`: a deal
@@ -1089,9 +1089,9 @@ matches only when every configured condition holds, and the bounds are
 inclusive (`425° ≥ 300°`, `150° ≤ 300°`). A deal whose temperature is unknown
 cannot prove the condition and is rejected as `REJECTED_TEMPERATURE`, exactly
 like an unknown quantity rejects a price-per-unit rule. The number is only read
-as a temperature when it carries a temperature unit, so `por menos de 700 €`
-never becomes a ceiling of 700 degrees, and a negated ceiling ("no quiero
-chollos por debajo de 100 grados") is stored as the floor it really states.
+as a temperature when it carries a temperature unit, so `under €700`
+never becomes a ceiling of 700 degrees, and a negated ceiling ("I do not want
+deals below 100 degrees") is stored as the floor it really states.
 `AlertRule.constraints` therefore keeps a single field per bound: the original
 `min_temperature` name is still *accepted* on input (persisted rules written by
 an older version keep loading) and is exposed as a read-only alias, but it is
@@ -1102,7 +1102,7 @@ Outside `constraints`, a rule also carries the shops it allows and excludes
 `notification_window`. The merchants are part of the same deterministic engine
 (`InterestEngine`); the window is not a matching condition at all, it only gates
 the Telegram delivery (see [Shops](#-shops-allowed-and-excluded-merchants) and
-[Horario de envío](#horario-de-envío-por-alerta)).
+[Notification schedule](#notification-schedule-per-alert)).
 
 Production scans, `run-rules --dry-run` and `alert test` share the same path
 (`repository.rule_from_row()` → `AlertRule` → `InterestRule` → `PricingEngine` →
@@ -1112,15 +1112,16 @@ are allowed and how the verdict is presented.
 ### Product matching
 
 The alert `product` is compared with the extracted `product_type` word by word,
-after normalising case, accents, punctuation and a simple Spanish plural
-(`zapatilla` matches `zapatillas`). The extracted type may carry qualifiers
-*after* the product, so `zapatillas` matches `Zapatillas running asfalto` and
-`mini pc` matches `Mini PC NAS`.
+after normalising case, accents, punctuation and simple plural forms
+(`shoe` matches `shoes`). The extracted type may carry qualifiers *after* the
+product, so `shoes` matches `road running shoes` and `mini pc` matches
+`Mini PC NAS`.
 
-This is still a deterministic comparison, not semantic matching: `zapatillas`
-never matches `running shoes`, and a trailing qualifier on its own is not a
-match (`leche` does not match `chocolate con leche`). When the product fact is
+This is still a deterministic comparison, not semantic matching: `shoes`
+never matches `running footwear`, and a trailing qualifier on its own is not a
+match (`milk` does not match `milk chocolate`). When the product fact is
 missing the verdict is unchanged, so the replay keeps reporting it as
+`NOT_EVALUABLE` instead of a wrong rejection.
 `NOT_EVALUABLE` instead of a wrong rejection.
 
 ### Merchant matching
@@ -1139,10 +1140,10 @@ Rules are created, updated and removed from Telegram using plain language, and
 the price dimension follows the sentence:
 
 ```text
-Avísame de zapatillas ASICS por menos de 200 €        → max_price = 200
-Avísame de Coca-Cola por menos de 0,50 € por unidad   → max_price_per_unit = 0.50
-Avísame de leche por menos de 0,79 € por litro        → max_price_per_liter = 0.79
-Cambia la alerta 2 para avisarme de zapatillas ASICS por menos de 200 €
+Notify me about ASICS shoes under €200                 → max_price = 200
+Notify me about Coca-Cola under €0.50 per unit          → max_price_per_unit = 0.50
+Notify me about milk under €0.79 per liter              → max_price_per_liter = 0.79
+Change alert 2 to notify me about ASICS shoes under €200
 ```
 
 An update finds the existing rule by its `query` and `brand` (the numeric id in
@@ -1150,26 +1151,26 @@ the message is only the operator's reference), rewrites the `max_price` /
 `price_unit` columns, replaces the structured rule and keeps the product and
 brand that were already stored. After that, `alert test <id>` replays the
 corrected price semantics. The CLI equivalents for a *new* rule are
-`chollo-alerts alert parse "<texto>"` and
-`chollo-alerts alert add "<texto>"`.
+`chollo-alerts alert parse "<text>"` and
+`chollo-alerts alert add "<text>"`.
 
 The same sentence can carry the shops and the notification hours:
 
 ```text
-Avísame de portátiles gaming por menos de 1000 € de Amazon o PcComponentes, pero no AliExpress
-Avísame de portátiles gaming por menos de 1000 € solo Amazon
-Avísame de portátiles gaming por menos de 1000 € de Amazon o PcComponentes pero no AliExpress, y solo entre las 08:00 y las 23:00
+Notify me about gaming laptops under €1000 from Amazon or PcComponentes, but not AliExpress
+Notify me about gaming laptops under €1000 from Amazon only
+Notify me about gaming laptops under €1000 from Amazon or PcComponentes but not AliExpress, only between 08:00 and 23:00
 ```
 
 | Expression | Stored as |
 | --- | --- |
-| `de Amazon`, `solo Amazon`, `de Amazon o PcComponentes`, `Amazon y PcComponentes` | `include_merchants` |
-| `no AliExpress`, `excepto AliExpress`, `excluir AliExpress` | `exclude_merchants` |
-| `solo entre las 08:00 y las 23:00`, `avísame de 8:00 a 23:00`, `08:00-23:00` | `notification_window` |
-| `… Europe/Madrid`, `hora peninsular`, `hora española` | `notification_window.timezone` |
-| `más de 500 grados`, `al menos 500°`, `no quiero chollos por debajo de 100 grados` | `constraints.temperature_min` |
-| `menos de 100 grados`, `como máximo 300°`, `no más de 250°` | `constraints.temperature_max` |
-| `entre 100 y 500 grados`, `de 250 grados a 750°` | `temperature_min` + `temperature_max` |
+| `from Amazon`, `Amazon only`, `from Amazon or PcComponentes`, `Amazon and PcComponentes` | `include_merchants` |
+| `not AliExpress`, `except AliExpress`, `exclude AliExpress` | `exclude_merchants` |
+| `only between 08:00 and 23:00`, `notify me from 8:00 to 23:00`, `08:00-23:00` | `notification_window` |
+| `… Europe/Madrid`, `Madrid time`, `Spanish time` | `notification_window.timezone` |
+| `above 500 degrees`, `at least 500°`, `I do not want deals below 100 degrees` | `constraints.temperature_min` |
+| `under 100 degrees`, `at most 300°`, `no more than 250°` | `constraints.temperature_max` |
+| `between 100 and 500 degrees`, `from 250 degrees to 750°` | `temperature_min` + `temperature_max` |
 
 The shop lists, the hours and the temperature window are read from the sentence
 itself (`alert_text.py`), not only from the model, and the deterministic reading
@@ -1177,12 +1178,12 @@ wins: it comes from the literal text, so it cannot be a hallucination. The
 model still covers what that reader does not understand (a lowercase shop name,
 a language it does not speak).
 
-**Vague periods are never invented.** `no me avises por la noche` is
-recognised, and the bot answers asking for the exact hours
-(`«por la noche»: no tengo una definición de ese horario: dime las horas
-exactas, por ejemplo «entre las 23:00 y las 07:00»`) instead of silently
-deciding that "night" means `22:00-08:00`. The same rule applies to
-`de madrugada`, `por la mañana` and `por la tarde`.
+**Vague periods are never invented.** `do not notify me at night` is
+recognised, and the bot answers by asking for exact hours
+(`"at night": I do not have a defined schedule for that period; give me exact
+hours, for example "between 23:00 and 07:00"`) instead of silently deciding
+that "night" means `22:00-08:00`. The same rule applies to phrases such as
+`early morning`, `in the morning` and `in the afternoon`.
 
 The same correction can be applied from Python through the canonical boundary,
 without touching the legacy columns by hand:
@@ -1194,14 +1195,14 @@ from chollometro_alerts.repository import DealRepository
 repository = DealRepository("deals.sqlite3")
 intent = AlertIntent(
     action="update",
-    query="zapatillas",
-    product_type="zapatillas",
+    query="shoes",
+    product_type="shoes",
     brand="ASICS",
     max_price=200,
     price_unit="absolute",
 )
 repository.apply_alert_intent(intent)
-repository.attach_alert_rule(2, intent_to_rule(intent), "texto original")
+repository.attach_alert_rule(2, intent_to_rule(intent), "original text")
 ```
 
 ### Managing the stored alerts
@@ -1214,21 +1215,21 @@ changing one is decided **before** anything is extracted
 interpretation path.
 
 ```text
-Avísame de portátiles Lenovo por menos de 700€   → CREATE_ALERT  (el extractor)
-Qué alertas tengo                                → LIST_ALERTS   (lista las guardadas)
-Elimina la alerta de Lenovo                      → DELETE_ALERT  (sin producto)
-Quita esa alerta                                 → DELETE_ALERT  (la última mostrada)
-Cambia 200 por 150€                              → UPDATE_ALERT  (la misma alerta)
-Quita el límite de 200€ de la alerta de cascos   → UPDATE_ALERT  (solo el límite)
+Notify me about Lenovo laptops under €700       → CREATE_ALERT  (extractor)
+What alerts do I have                            → LIST_ALERTS   (lists stored alerts)
+Delete the Lenovo alert                          → DELETE_ALERT  (no product required)
+Delete that alert                                → DELETE_ALERT  (the last one shown)
+Change 200 to €150                               → UPDATE_ALERT  (the same alert)
+Remove the €200 limit from the headphones alert  → UPDATE_ALERT  (only the limit)
 ```
 
 A deletion does not need a product, a brand or a category: it needs the alert it
 refers to. The reference is read from the sentence itself and compared with the
 stored alerts, structured facts first (`max_price`, shop, product, brand, the
 words of the query) and the normalized text last, so `200€`, `200 euros`,
-`menos de 200` and `por debajo de 200` are the same condition, and `borra`,
-`elimina`, `quita`, `borra lo de`, `ya no quiero` and `deja de avisarme` are the
-same operation. `Quita esa alerta` uses the last alert the bot showed or
+`under 200` and `below 200` are the same condition, and `delete`,
+`remove`, `drop`, `delete the one about`, `I no longer want` and
+`stop notifying me` are treated as the same operation. `Delete that alert` uses the last alert the bot showed or
 created, which is remembered per chat; without it the bot asks which one.
 
 | Candidates the sentence matches | What the bot does |
@@ -1239,8 +1240,8 @@ created, which is remembered per chat; without it the bot asks which one.
 
 An update rewrites **that same row**: it keeps its id, its creation time and its
 matches, and it changes only the properties the sentence asked for (the price
-limit, the shops, the schedule), so `Cambia 200 por 150€` on "Cascos Sony por
-menos de 200€" leaves one alert, not two. Changing the product of an alert is
+limit, the shops, the schedule), so `Change 200 to €150` on "Sony headphones
+under €200" leaves one alert, not two. Changing the product of an alert is
 not an update: that is a deletion plus a creation.
 
 ## 🧪 Testing an alert against historical deals
@@ -1258,8 +1259,8 @@ Example output:
 ```text
 RULE #12
 
-Query: zapatillas
-Product: zapatillas
+Query: shoes
+Product: shoes
 Brand: ASICS
 max_price: 80
 
@@ -1355,7 +1356,7 @@ per-alert quiet-hours calendar beyond the single window.
 
 ### Vague periods are not defined
 
-Nothing in the product says what "por la noche" means, so the parser refuses to
+Nothing in the product says what "at night" means, so the parser refuses to
 invent it: it asks for concrete hours. If a house definition is ever wanted, it
 belongs in the configuration (and the parser), not in a silent guess.
 
