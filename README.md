@@ -688,7 +688,7 @@ Pepper sites
 
 ### Operational stack
 
-`docker compose up -d --build` provisiona Prometheus, Grafana y Alertmanager.
+`docker compose up -d --build` provisions Prometheus, Grafana and Alertmanager.
 `docker compose up -d --build` provisions Prometheus, Grafana and Alertmanager.
 Grafana is available at `http://localhost:${GRAFANA_PORT:-3000}` and
 automatically loads the Prometheus data source and the **Chollo Alerts —
@@ -738,7 +738,7 @@ health state are derived from the same per-cycle `RunSummary`.
 
 Everything lives in one SQLite file (`--db`, `deals.sqlite3` by default):
 
-### Telegram multiusuario
+### Telegram multi-user mode
 ### Telegram multi-user mode
 
 With `TELEGRAM_MULTIUSER_ENABLED=true`, each rule stores `user_id` and
